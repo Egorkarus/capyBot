@@ -101,6 +101,18 @@ async function reconnect(client, guildId) {
 
             await entersState(connection, VoiceConnectionStatus.Ready, 10000);
 
+            const { getGuildAudioState } = require('./audioManager');
+            const audioState = getGuildAudioState(guildId);
+            if (audioState) {
+                audioState.connection = connection;
+                const { AudioPlayerStatus } = require('@discordjs/voice');
+                if (audioState.player.state.status !== AudioPlayerStatus.Idle) {
+                    audioState.subscription = connection.subscribe(audioState.player);
+                } else {
+                    audioState.subscription = null;
+                }
+            }
+
             const textChannel = activeGuild.channels.cache.get(state.textChannelId);
             if (textChannel) {
                 await textChannel.send("🍊 Хех, связь упала, но капибара всегда возвращается. Я снова в канале! 👑");

@@ -153,12 +153,13 @@ function createGuildAudioState(guildId, connection, textChannel) {
         },
     });
 
-    connection.subscribe(player);
+    const subscription = connection.subscribe(player);
 
     const state = {
         player,
         connection,
         textChannel,
+        subscription,
         tracks: [],
         currentFilePath: null
     };
@@ -215,6 +216,10 @@ async function playNextTrack(guildId) {
 
     if (state.tracks.length === 0) {
         state.textChannel.send("Песни закончились. Несите следующую, иначе я усну. 🍊");
+        if (state.subscription) {
+            state.subscription.unsubscribe();
+            state.subscription = null;
+        }
         return;
     }
 
@@ -286,7 +291,9 @@ function playAudio(guildId, url, title, connection, textChannel) {
     } else {
         state.connection = connection;
         state.textChannel = textChannel;
-        connection.subscribe(state.player);
+        if (!state.subscription) {
+            state.subscription = connection.subscribe(state.player);
+        }
     }
 
     state.tracks.push({ url, title });
@@ -339,6 +346,11 @@ function stopAudio(guildId) {
 
     state.tracks = [];
     state.player.stop();
+
+    if (state.subscription) {
+        state.subscription.unsubscribe();
+        state.subscription = null;
+    }
 
     if (state.currentFilePath && fs.existsSync(state.currentFilePath)) {
         fs.unlink(state.currentFilePath, (err) => {
