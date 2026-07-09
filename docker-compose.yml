@@ -1,0 +1,9 @@
+services:
+  bot:
+    build: .
+    container_name: capybot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./temp:/usr/src/app/temp
