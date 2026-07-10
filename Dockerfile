@@ -23,11 +23,19 @@ RUN apk add --no-cache \
     ca-certificates \
     python3
 
-COPY --from=builder /usr/src/app/node_modules ./node_modules
 COPY --from=builder /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
-COPY . .
+COPY --from=builder --chown=node:node /usr/src/app/node_modules ./node_modules
+
+# Копируем исходный код с назначением прав пользователю node
+COPY --chown=node:node . .
+
+# Создаем папку temp с правами для записи
+RUN mkdir -p temp && chown -R node:node temp
 
 ENV NODE_ENV=production
 
-CMD ["node", "index.js"]
+# Переключаемся на безопасного пользователя node
+USER node
+
+CMD ["node", "src/index.js"]
 
