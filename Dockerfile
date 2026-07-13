@@ -12,7 +12,7 @@ RUN apk add --no-cache \
 
 COPY package*.json ./
 
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 FROM node:20-alpine
 
@@ -24,18 +24,15 @@ RUN apk add --no-cache \
     python3
 
 COPY --from=builder /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
-COPY --from=builder --chown=node:node /usr/src/app/node_modules ./node_modules
+COPY --from=builder /usr/src/app/node_modules ./node_modules
 
-# Копируем исходный код с назначением прав пользователю node
-COPY --chown=node:node . .
+COPY . .
 
-# Создаем папку temp с правами для записи
-RUN mkdir -p temp && chown -R node:node temp
+# NOTE: Оставляем бота под root-правами. Если переключиться на пользователя node,
+# yt-dlp ловит пермишен-ошибки при создании дочерних процессов и удалении темповых файлов.
+RUN mkdir -p temp
 
 ENV NODE_ENV=production
-
-# Переключаемся на безопасного пользователя node
-USER node
 
 CMD ["node", "src/index.js"]
 

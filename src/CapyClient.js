@@ -24,7 +24,7 @@ class CapyClient extends Client {
         this.loadCommands();
         await this.cleanTempDirectory();
         
-        this.once('ready', () => {
+        this.once('clientReady', () => {
             logInfo(`Logged in as ${this.user.tag}`);
         });
 

@@ -27,6 +27,14 @@ class GuildSession {
         this.currentFilePath = null;
         this.textChannel = null;
 
+        this.player.on('stateChange', (oldState, newState) => {
+            logInfo(`[DEBUG-PLAYER] State transitioned from ${oldState.status} to ${newState.status}`);
+        });
+
+        this.player.on('debug', msg => {
+            logInfo(`[DEBUG-PLAYER] ${msg}`);
+        });
+
         this.player.on(AudioPlayerStatus.Idle, async () => {
             logInfo(`Audio player idle in guild ${this.guildId}`);
             await this.cleanupCurrentFile();
@@ -46,6 +54,19 @@ class GuildSession {
     setConnection(connection, textChannel) {
         this.connection = connection;
         this.textChannel = textChannel;
+
+        this.connection.on('stateChange', (oldState, newState) => {
+            logInfo(`[DEBUG-CONN] State transitioned from ${oldState.status} to ${newState.status}`);
+        });
+
+        this.connection.on('debug', msg => {
+            logInfo(`[DEBUG-CONN] ${msg}`);
+        });
+
+        this.connection.on('error', error => {
+            logError(`[DEBUG-CONN] Error`, error);
+        });
+
         if (!this.subscription) {
             this.subscription = this.connection.subscribe(this.player);
         }
@@ -64,10 +85,9 @@ class GuildSession {
             if (this.textChannel) {
                 this.textChannel.send(config.messages.queueEnded);
             }
-            if (this.subscription) {
-                this.subscription.unsubscribe();
-                this.subscription = null;
-            }
+            // NOTE: Оставляем подписку активной даже при пустой очереди.
+            // Если тут сделать unsubscribe(), то следующий добавленный трек 
+            // улетит в пустоту и будет играть без звука.
             return;
         }
 
@@ -232,7 +252,9 @@ class GuildSession {
 
     downloadViaYtDlp(url, outputPathPattern) {
         return new Promise((resolve, reject) => {
-            const args = ['-f', 'bestaudio/best', '--no-video', '--no-playlist', '-o', outputPathPattern];
+            // NOTE: Конвертим всё в mp3, так как сырой webm/opus от ютуба иногда 
+            // намертво вешает OggDemuxer в либе discordjs/voice.
+            const args = ['-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--no-video', '--no-playlist', '--js-runtimes', 'node', '-o', outputPathPattern];
             fs.access('cookies.txt', fs.constants.F_OK, (err) => {
                 if (!err) args.push('--cookies', 'cookies.txt');
                 args.push('--', url); // Безопасная передача URL как позиционного аргумента
@@ -292,7 +314,7 @@ class GuildSession {
             const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
             const isSoundcloud = url.includes('soundcloud.com');
             if (isYoutube || isSoundcloud) {
-                const args = ['--print', 'title', '--no-playlist'];
+                const args = ['--print', 'title', '--no-playlist', '--js-runtimes', 'node'];
                 fs.access('cookies.txt', fs.constants.F_OK, (err) => {
                     if (!err) args.push('--cookies', 'cookies.txt');
                     args.push('--', url); // Защита от флаговых инъекций

@@ -3,10 +3,11 @@ services:
     build: .
     container_name: capybot
     restart: always
+    # NOTE: Юзаем хостовую сеть. На обычном bridge докеровский NAT отрубает UDP-порт
+    # во время скачивания следующего трека, из-за чего пропадает звук.
+    network_mode: "host"
     env_file:
       - .env
-    volumes:
-      - ./temp:/usr/src/app/temp
     logging:
       driver: "json-file"
       options:
