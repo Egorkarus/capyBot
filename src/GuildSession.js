@@ -119,6 +119,12 @@ class GuildSession {
                 await this.downloadDirectFile(nextTrack.url, tempFilePath);
             }
 
+            // NOTE: Микро-реконнект перед каждым новым треком. 
+            // Это сбрасывает таймаут UDP на стороне Discord (чтобы не пропадал звук после долгой скачки).
+            if (this.connection && this.connection.state.status === VoiceConnectionStatus.Ready) {
+                this.connection.rejoin();
+            }
+
             this.currentFilePath = tempFilePath;
             const resource = createAudioResource(tempFilePath);
             this.player.play(resource);
