@@ -90,7 +90,8 @@ class GuildSession {
 
         const nextTrack = this.tracks.shift();
         const filePrefix = `track_${this.guildId}_${Date.now()}`;
-        let tempFilePath = '';
+        let tempFilePath = null;
+        let playTarget = null;
 
         try {
             if (this.textChannel) {
@@ -103,19 +104,28 @@ class GuildSession {
             const isMp4 = nextTrack.url.toLowerCase().split('?')[0].endsWith('.mp4');
 
             if (isYoutube || isSoundcloud || isTwitch || isMp4) {
-                logInfo(`Downloading via yt-dlp: ${nextTrack.url}`);
-                const outputPathPattern = `temp/${filePrefix}.%(ext)s`;
-                await this.downloadViaYtDlp(nextTrack.url, outputPathPattern);
-                
-                const files = await fsPromises.readdir('temp');
-                const matchedFile = files.find(f => f.startsWith(filePrefix));
-                if (!matchedFile) throw new Error("Downloaded file not found on disk");
-                
-                tempFilePath = `temp/${matchedFile}`;
+                const { isLive, directUrl } = await this.getTrackStreamInfo(nextTrack.url);
+
+                if (isLive && directUrl) {
+                    logInfo(`Playing live stream directly via HLS/stream: ${nextTrack.url}`);
+                    playTarget = directUrl;
+                } else {
+                    logInfo(`Downloading track via yt-dlp: ${nextTrack.url}`);
+                    const outputPathPattern = `temp/${filePrefix}.%(ext)s`;
+                    await this.downloadViaYtDlp(nextTrack.url, outputPathPattern);
+                    
+                    const files = await fsPromises.readdir('temp');
+                    const matchedFile = files.find(f => f.startsWith(filePrefix));
+                    if (!matchedFile) throw new Error("Downloaded file not found on disk");
+                    
+                    tempFilePath = `temp/${matchedFile}`;
+                    playTarget = tempFilePath;
+                }
             } else {
                 logInfo(`Downloading direct file: ${nextTrack.url}`);
                 tempFilePath = `temp/${filePrefix}.mp3`;
                 await this.downloadDirectFile(nextTrack.url, tempFilePath);
+                playTarget = tempFilePath;
             }
 
             if (this.connection && this.connection.state.status === VoiceConnectionStatus.Ready) {
@@ -123,9 +133,9 @@ class GuildSession {
             }
 
             this.currentFilePath = tempFilePath;
-            const resource = createAudioResource(tempFilePath);
+            const resource = createAudioResource(playTarget);
             this.player.play(resource);
-            logInfo(`Started playing ${tempFilePath} in guild ${this.guildId}`);
+            logInfo(`Started playing ${playTarget} in guild ${this.guildId}`);
         } catch (error) {
             logError(`Failed to download/play ${nextTrack.url}`, error);
             if (this.textChannel) {
@@ -251,6 +261,31 @@ class GuildSession {
         } catch (error) {
             return null;
         }
+    }
+
+    getTrackStreamInfo(url) {
+        return new Promise((resolve) => {
+            const args = ['--print', '%(is_live)s', '-g', '-f', 'bestaudio/best', '--no-playlist', '--js-runtimes', 'node'];
+            fs.access('cookies.txt', fs.constants.F_OK, (err) => {
+                if (!err) args.push('--cookies', 'cookies.txt');
+                args.push('--', url);
+                const ytDlp = spawn('yt-dlp', args);
+                let outputData = '';
+                ytDlp.stdout.on('data', chunk => outputData += chunk.toString());
+                ytDlp.on('close', code => {
+                    if (code === 0 && outputData.trim()) {
+                        const lines = outputData.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+                        const isLiveStr = lines[0]?.toLowerCase();
+                        const isLive = isLiveStr === 'true' || url.includes('/live/') || url.includes('twitch.tv');
+                        const directUrl = lines.find(l => l.startsWith('http://') || l.startsWith('https://'));
+                        resolve({ isLive, directUrl });
+                    } else {
+                        resolve({ isLive: false, directUrl: null });
+                    }
+                });
+                ytDlp.on('error', () => resolve({ isLive: false, directUrl: null }));
+            });
+        });
     }
 
     downloadViaYtDlp(url, outputPathPattern) {
