@@ -1,6 +1,6 @@
 const { joinVoiceChannel, entersState, VoiceConnectionStatus } = require('@discordjs/voice');
-const { logError, logInfo } = require('../logger');
-const GuildSession = require('../GuildSession');
+const { logError, logInfo } = require('../utils/logger');
+const GuildSession = require('../structures/GuildSession');
 
 module.exports = {
     name: 'play',
@@ -19,18 +19,21 @@ module.exports = {
         
         const isYoutubeUrl = fileUrl && (fileUrl.includes('youtube.com') || fileUrl.includes('youtu.be'));
         const isSoundcloudUrl = fileUrl && fileUrl.includes('soundcloud.com');
+        const isTwitchUrl = fileUrl && fileUrl.includes('twitch.tv');
         
-        let isMp3Url = false;
+        let isAudioOrVideoUrl = false;
         if (fileUrl) {
             try {
                 const parsedUrl = new URL(fileUrl);
-                isMp3Url = parsedUrl.pathname.toLowerCase().endsWith('.mp3');
+                const ext = parsedUrl.pathname.toLowerCase();
+                isAudioOrVideoUrl = ext.endsWith('.mp3') || ext.endsWith('.mp4') || ext.endsWith('.wav') || ext.endsWith('.ogg') || ext.endsWith('.m4a') || ext.endsWith('.flac');
             } catch (err) {
-                isMp3Url = fileUrl.toLowerCase().split('?')[0].endsWith('.mp3');
+                const cleanUrl = fileUrl.toLowerCase().split('?')[0];
+                isAudioOrVideoUrl = cleanUrl.endsWith('.mp3') || cleanUrl.endsWith('.mp4') || cleanUrl.endsWith('.wav') || cleanUrl.endsWith('.ogg');
             }
         }
 
-        if (!fileUrl || (!isMp3Url && !isYoutubeUrl && !isSoundcloudUrl)) {
+        if (!fileUrl || (!isAudioOrVideoUrl && !isYoutubeUrl && !isSoundcloudUrl && !isTwitchUrl)) {
             await message.reply(client.config.messages.playInvalidUrl);
             return;
         }

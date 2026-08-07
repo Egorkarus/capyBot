@@ -1,4 +1,4 @@
-const { logInfo } = require('../logger');
+const { logInfo } = require('../utils/logger');
 
 module.exports = {
     name: 'leave',

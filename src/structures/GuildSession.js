@@ -5,8 +5,8 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const { spawn } = require('child_process');
-const config = require('./config');
-const { logInfo, logError } = require('./logger');
+const config = require('../config');
+const { logInfo, logError } = require('../utils/logger');
 
 class GuildSession {
     constructor(guildId, voiceChannelId, textChannelId) {
@@ -85,9 +85,6 @@ class GuildSession {
             if (this.textChannel) {
                 this.textChannel.send(config.messages.queueEnded);
             }
-            // NOTE: Оставляем подписку активной даже при пустой очереди.
-            // Если тут сделать unsubscribe(), то следующий добавленный трек 
-            // улетит в пустоту и будет играть без звука.
             return;
         }
 
@@ -102,8 +99,10 @@ class GuildSession {
             
             const isYoutube = nextTrack.url.includes('youtube.com') || nextTrack.url.includes('youtu.be');
             const isSoundcloud = nextTrack.url.includes('soundcloud.com');
-            
-            if (isYoutube || isSoundcloud) {
+            const isTwitch = nextTrack.url.includes('twitch.tv');
+            const isMp4 = nextTrack.url.toLowerCase().split('?')[0].endsWith('.mp4');
+
+            if (isYoutube || isSoundcloud || isTwitch || isMp4) {
                 logInfo(`Downloading via yt-dlp: ${nextTrack.url}`);
                 const outputPathPattern = `temp/${filePrefix}.%(ext)s`;
                 await this.downloadViaYtDlp(nextTrack.url, outputPathPattern);
@@ -114,13 +113,11 @@ class GuildSession {
                 
                 tempFilePath = `temp/${matchedFile}`;
             } else {
-                logInfo(`Downloading direct MP3: ${nextTrack.url}`);
+                logInfo(`Downloading direct file: ${nextTrack.url}`);
                 tempFilePath = `temp/${filePrefix}.mp3`;
                 await this.downloadDirectFile(nextTrack.url, tempFilePath);
             }
 
-            // NOTE: Микро-реконнект перед каждым новым треком. 
-            // Это сбрасывает таймаут UDP на стороне Discord (чтобы не пропадал звук после долгой скачки).
             if (this.connection && this.connection.state.status === VoiceConnectionStatus.Ready) {
                 this.connection.rejoin();
             }
@@ -258,12 +255,10 @@ class GuildSession {
 
     downloadViaYtDlp(url, outputPathPattern) {
         return new Promise((resolve, reject) => {
-            // NOTE: Конвертим всё в mp3, так как сырой webm/opus от ютуба иногда 
-            // намертво вешает OggDemuxer в либе discordjs/voice.
             const args = ['-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--no-video', '--no-playlist', '--js-runtimes', 'node', '-o', outputPathPattern];
             fs.access('cookies.txt', fs.constants.F_OK, (err) => {
                 if (!err) args.push('--cookies', 'cookies.txt');
-                args.push('--', url); // Безопасная передача URL как позиционного аргумента
+                args.push('--', url);
                 const ytDlp = spawn('yt-dlp', args);
                 let errorData = '';
                 ytDlp.stderr.on('data', chunk => errorData += chunk.toString());
@@ -319,11 +314,12 @@ class GuildSession {
         return new Promise((resolve) => {
             const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
             const isSoundcloud = url.includes('soundcloud.com');
-            if (isYoutube || isSoundcloud) {
+            const isTwitch = url.includes('twitch.tv');
+            if (isYoutube || isSoundcloud || isTwitch) {
                 const args = ['--print', 'title', '--no-playlist', '--js-runtimes', 'node'];
                 fs.access('cookies.txt', fs.constants.F_OK, (err) => {
                     if (!err) args.push('--cookies', 'cookies.txt');
-                    args.push('--', url); // Защита от флаговых инъекций
+                    args.push('--', url);
                     const ytDlp = spawn('yt-dlp', args);
                     let titleData = '';
                     ytDlp.stdout.on('data', chunk => titleData += chunk.toString());

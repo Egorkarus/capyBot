@@ -7,3 +7,5 @@ cookies.txt
 npm-debug.log*
 .DS_Store
 deploy/
+.openspec/
+

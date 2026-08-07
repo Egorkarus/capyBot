@@ -1,0 +1,30 @@
+name: Deploy CapyBot
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+          port: ${{ secrets.PORT || 22 }}
+          script: |
+            cd ~/capyBot || cd /var/www/capyBot || exit 1
+            git pull origin ${{ github.ref_name }}
+            if [ $(docker ps -q -f name=capybot) ]; then
+              echo "Containers are running. Sending SIGUSR2 for Zero-Downtime Hot Reload..."
+              docker exec capybot kill -SIGUSR2 1 || docker-compose up -d --build
+            else
+              echo "Container not running. Starting docker-compose..."
+              docker-compose up -d --build
+            fi

@@ -1,5 +1,5 @@
 const { joinVoiceChannel, entersState, VoiceConnectionStatus } = require('@discordjs/voice');
-const { logError, logInfo } = require('../logger');
+const { logError, logInfo } = require('../utils/logger');
 
 module.exports = {
     name: 'join',
