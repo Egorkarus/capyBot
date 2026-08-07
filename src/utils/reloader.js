@@ -40,6 +40,17 @@ function reloadModules(client) {
         client.loadCommands();
         client.loadEvents();
 
+        // Update prototype of active sessions so existing sessions inherit new class methods instantly
+        if (client.sessions && client.sessions.size > 0) {
+            const guildSessionPath = path.join(__dirname, '..', 'structures', 'GuildSession.js');
+            delete require.cache[require.resolve(guildSessionPath)];
+            const FreshGuildSession = require(guildSessionPath);
+            for (const session of client.sessions.values()) {
+                Object.setPrototypeOf(session, FreshGuildSession.prototype);
+            }
+            logInfo(`Updated prototype for ${client.sessions.size} active sessions.`);
+        }
+
         logInfo('Zero-Downtime Hot Reload completed successfully!');
         return true;
     } catch (error) {

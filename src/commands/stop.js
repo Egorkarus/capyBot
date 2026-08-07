@@ -10,6 +10,7 @@ module.exports = {
         }
 
         await session.stop();
+        client.deleteSession(message.guild.id);
         await message.reply(client.config.messages.stopSuccess);
     }
 };
