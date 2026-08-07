@@ -67,7 +67,7 @@ module.exports = {
             const title = await GuildSession.fetchTrackTitle(fileUrl);
             const isIdle = session.player.state.status === 'idle';
             
-            session.addTrack(fileUrl, title);
+            session.addTrack(fileUrl, title, message.channel);
 
             if (isIdle) {
                 await statusMessage.edit(client.config.messages.playNowPlaying.replace('{title}', title));

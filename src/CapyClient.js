@@ -3,7 +3,6 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const { logInfo, logError } = require('./utils/logger');
-const { reloadModules } = require('./utils/reloader');
 
 class CapyClient extends Client {
     constructor() {
@@ -20,12 +19,6 @@ class CapyClient extends Client {
         this.sessions = new Map();
         this.config = config;
         this.eventHandlers = new Map();
-
-        // Bind SIGUSR2 process signal for HMR
-        process.on('SIGUSR2', () => {
-            logInfo('Received SIGUSR2 signal. Triggering Hot Reload...');
-            reloadModules(this);
-        });
     }
 
     async init() {

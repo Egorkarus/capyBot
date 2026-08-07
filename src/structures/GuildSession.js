@@ -89,6 +89,7 @@ class GuildSession {
         }
 
         const nextTrack = this.tracks.shift();
+        const currentTextChannel = nextTrack.textChannel || this.textChannel;
         const filePrefix = `track_${this.guildId}_${Date.now()}`;
         let tempFilePath = null;
         let playTarget = null;
@@ -100,17 +101,17 @@ class GuildSession {
             const isMp4 = nextTrack.url.toLowerCase().split('?')[0].endsWith('.mp4');
 
             if (isYoutube || isSoundcloud || isTwitch || isMp4) {
-                const { isLive, directUrl } = await this.getTrackStreamInfo(nextTrack.url);
+                const streamUrl = await this.getTrackStreamInfo(nextTrack.url);
 
-                if (isLive && directUrl) {
-                    if (this.textChannel) {
-                        this.textChannel.send(`🍊📡 Подключаюсь к трансляции...\n**${nextTrack.title}**`);
+                if (streamUrl) {
+                    if (currentTextChannel) {
+                        currentTextChannel.send(`🍊📡 Подключаюсь к трансляции...\n**${nextTrack.title}**`);
                     }
-                    logInfo(`Playing live stream directly via HLS: ${nextTrack.url}`);
-                    playTarget = directUrl;
+                    logInfo(`Playing stream directly via HLS: ${nextTrack.url}`);
+                    playTarget = streamUrl;
                 } else {
-                    if (this.textChannel) {
-                        this.textChannel.send(config.messages.downloading.replace('{title}', nextTrack.title));
+                    if (currentTextChannel) {
+                        currentTextChannel.send(`Не могу получить прямой поток для **${nextTrack.title}**, пробую скачать... 🍊📥`);
                     }
                     logInfo(`Downloading track via yt-dlp: ${nextTrack.url}`);
                     const outputPathPattern = `temp/${filePrefix}.%(ext)s`;
@@ -124,8 +125,8 @@ class GuildSession {
                     playTarget = tempFilePath;
                 }
             } else {
-                if (this.textChannel) {
-                    this.textChannel.send(config.messages.downloading.replace('{title}', nextTrack.title));
+                if (currentTextChannel) {
+                    currentTextChannel.send(config.messages.downloading.replace('{title}', nextTrack.title));
                 }
                 logInfo(`Downloading direct file: ${nextTrack.url}`);
                 tempFilePath = `temp/${filePrefix}.mp3`;
@@ -138,24 +139,22 @@ class GuildSession {
             }
 
             this.currentFilePath = tempFilePath;
-            const resource = playTarget.startsWith('http://') || playTarget.startsWith('https://')
-                ? createAudioResource(playTarget, { inputType: InputType.Arbitrary })
-                : createAudioResource(playTarget);
-                
+            const resource = createAudioResource(playTarget, {
+                inputType: playTarget.startsWith('http') ? InputType.Arbitrary : undefined
+            });
             this.player.play(resource);
             logInfo(`Started playing ${playTarget} in guild ${this.guildId}`);
         } catch (error) {
-            logError(`Failed to download/play ${nextTrack.url}`, error);
-            if (this.textChannel) {
-                this.textChannel.send(config.messages.downloadFail.replace('{title}', nextTrack.title));
+            logError("Error in playNextTrack", error);
+            if (currentTextChannel) {
+                currentTextChannel.send(`Не могу воспроизвести трек **${nextTrack.title}**, пропускаю. 🍊`);
             }
-            await this.cleanupCurrentFile();
             this.playNextTrack();
         }
     }
 
-    addTrack(url, title) {
-        this.tracks.push({ url, title });
+    addTrack(url, title, textChannel = null) {
+        this.tracks.push({ url, title, textChannel });
         if (this.player.state.status === AudioPlayerStatus.Idle) {
             this.playNextTrack();
         }
@@ -273,7 +272,7 @@ class GuildSession {
 
     getTrackStreamInfo(url) {
         return new Promise((resolve) => {
-            const args = ['--print', '%(is_live)s', '-g', '-f', 'bestaudio/best', '--no-playlist', '--js-runtimes', 'node'];
+            const args = ['-g', '-f', 'bestaudio/best', '--no-playlist', '--js-runtimes', 'node'];
             fs.access('cookies.txt', fs.constants.F_OK, (err) => {
                 if (!err) args.push('--cookies', 'cookies.txt');
                 args.push('--', url);
@@ -282,16 +281,13 @@ class GuildSession {
                 ytDlp.stdout.on('data', chunk => outputData += chunk.toString());
                 ytDlp.on('close', code => {
                     if (code === 0 && outputData.trim()) {
-                        const lines = outputData.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-                        const isLiveStr = lines[0]?.toLowerCase();
-                        const isLive = isLiveStr === 'true' || url.includes('/live/') || url.includes('twitch.tv');
-                        const directUrl = lines.find(l => l.startsWith('http://') || l.startsWith('https://'));
-                        resolve({ isLive, directUrl });
+                        const lines = outputData.trim().split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('http'));
+                        resolve(lines[0] || null);
                     } else {
-                        resolve({ isLive: false, directUrl: null });
+                        resolve(null);
                     }
                 });
-                ytDlp.on('error', () => resolve({ isLive: false, directUrl: null }));
+                ytDlp.on('error', () => resolve(null));
             });
         });
     }
