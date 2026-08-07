@@ -19,7 +19,7 @@ jobs:
           passphrase: ${{ secrets.PASSPHRASE }}
           port: ${{ secrets.PORT || 22 }}
           script: |
-            cd ~/capyBot || cd /var/www/capyBot || exit 1
+            cd /var/www/blackiron.ru/bot || exit 1
             git pull origin ${{ github.ref_name }}
             if [ $(docker ps -q -f name=capybot) ]; then
               echo "Containers are running. Sending SIGUSR2 for Zero-Downtime Hot Reload..."
