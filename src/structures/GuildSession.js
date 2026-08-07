@@ -138,9 +138,7 @@ class GuildSession {
             }
 
             this.currentFilePath = tempFilePath;
-            const resource = createAudioResource(playTarget, {
-                inputType: playTarget.startsWith('http') ? StreamType.Arbitrary : undefined
-            });
+            const resource = createAudioResource(playTarget);
             this.player.play(resource);
             logInfo(`Started playing ${playTarget} in guild ${this.guildId}`);
         } catch (error) {
