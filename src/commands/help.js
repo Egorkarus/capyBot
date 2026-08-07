@@ -1,7 +1,10 @@
+const { logInfo } = require('../utils/logger');
+
 module.exports = {
     name: 'help',
     adminOnly: false,
     async execute(message) {
+        logInfo('[HMR TEST] Executing help command...');
         const client = message.client;
         const commands = client.commands;
         
