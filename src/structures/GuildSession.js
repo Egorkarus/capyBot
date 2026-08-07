@@ -29,16 +29,19 @@ class GuildSession {
 
         this.player.on('stateChange', (oldState, newState) => {
             logInfo(`[DEBUG-PLAYER] State transitioned from ${oldState.status} to ${newState.status}`);
+            if (newState.status === AudioPlayerStatus.Idle) {
+                logInfo(`Audio player idle in guild ${this.guildId}`);
+                if (this.currentStreamProcess) {
+                    this.currentStreamProcess.kill();
+                    this.currentStreamProcess = null;
+                }
+                this.cleanupCurrentFile();
+                this.playNextTrack();
+            }
         });
 
         this.player.on('debug', msg => {
             logInfo(`[DEBUG-PLAYER] ${msg}`);
-        });
-
-        this.player.on(AudioPlayerStatus.Idle, async () => {
-            logInfo(`Audio player idle in guild ${this.guildId}`);
-            await this.cleanupCurrentFile();
-            this.playNextTrack();
         });
 
         this.player.on('error', async error => {
@@ -100,14 +103,14 @@ class GuildSession {
             const isTwitch = nextTrack.url.includes('twitch.tv');
 
             if (isYoutube || isSoundcloud || isTwitch) {
-                const streamUrl = await this.getTrackStreamInfo(nextTrack.url);
+                const streamProcess = await this.createYtDlpStream(nextTrack.url);
 
-                if (streamUrl) {
+                if (streamProcess) {
                     if (currentTextChannel) {
                         currentTextChannel.send(`🍊📡 Подключаюсь к трансляции...\n**${nextTrack.title}**`);
                     }
                     logInfo(`Playing stream directly via HLS: ${nextTrack.url}`);
-                    playTarget = streamUrl;
+                    this.currentStreamProcess = streamProcess;
                 } else {
                     if (currentTextChannel) {
                         currentTextChannel.send(`Не могу получить прямой поток для **${nextTrack.title}**, пробую скачать... 🍊📥`);
@@ -138,7 +141,13 @@ class GuildSession {
             }
 
             this.currentFilePath = tempFilePath;
-            const resource = createAudioResource(playTarget);
+            
+            let resource;
+            if (this.currentStreamProcess) {
+                resource = createAudioResource(this.currentStreamProcess.stdout);
+            } else {
+                resource = createAudioResource(playTarget);
+            }
             this.player.play(resource);
             logInfo(`Started playing ${playTarget} in guild ${this.guildId}`);
         } catch (error) {
@@ -174,6 +183,10 @@ class GuildSession {
     async stop() {
         this.tracks = [];
         this.player.stop();
+        if (this.currentStreamProcess) {
+            this.currentStreamProcess.kill();
+            this.currentStreamProcess = null;
+        }
         if (this.subscription) {
             this.subscription.unsubscribe();
             this.subscription = null;
@@ -267,24 +280,23 @@ class GuildSession {
         }
     }
 
-    getTrackStreamInfo(url) {
+    createYtDlpStream(url) {
         return new Promise((resolve) => {
-            const args = ['-g', '-f', 'bestaudio/best', '--no-playlist', '--js-runtimes', 'node'];
+            const args = ['-f', 'bestaudio/best', '--no-playlist', '-o', '-'];
             fs.access('cookies.txt', fs.constants.F_OK, (err) => {
                 if (!err) args.push('--cookies', 'cookies.txt');
                 args.push('--', url);
                 const ytDlp = spawn('yt-dlp', args);
-                let outputData = '';
-                ytDlp.stdout.on('data', chunk => outputData += chunk.toString());
-                ytDlp.on('close', code => {
-                    if (code === 0 && outputData.trim()) {
-                        const lines = outputData.trim().split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('http'));
-                        resolve(lines[0] || null);
-                    } else {
-                        resolve(null);
+                
+                // We resolve immediately with the process so the player can pipe stdout
+                resolve(ytDlp);
+                
+                ytDlp.stderr.on('data', data => {
+                    const line = data.toString();
+                    if (line.includes('ERROR:')) {
+                        logError(`yt-dlp error: ${line}`);
                     }
                 });
-                ytDlp.on('error', () => resolve(null));
             });
         });
     }
