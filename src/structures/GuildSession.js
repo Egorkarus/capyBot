@@ -1,4 +1,4 @@
-const { joinVoiceChannel, entersState, VoiceConnectionStatus, createAudioPlayer, createAudioResource, AudioPlayerStatus, NoSubscriberBehavior, getVoiceConnection } = require('@discordjs/voice');
+const { joinVoiceChannel, entersState, VoiceConnectionStatus, createAudioPlayer, createAudioResource, AudioPlayerStatus, NoSubscriberBehavior, getVoiceConnection, InputType } = require('@discordjs/voice');
 const { AuditLogEvent } = require('discord.js');
 const fsPromises = require('fs/promises');
 const fs = require('fs');
@@ -94,10 +94,6 @@ class GuildSession {
         let playTarget = null;
 
         try {
-            if (this.textChannel) {
-                this.textChannel.send(config.messages.downloading.replace('{title}', nextTrack.title));
-            }
-            
             const isYoutube = nextTrack.url.includes('youtube.com') || nextTrack.url.includes('youtu.be');
             const isSoundcloud = nextTrack.url.includes('soundcloud.com');
             const isTwitch = nextTrack.url.includes('twitch.tv');
@@ -107,9 +103,15 @@ class GuildSession {
                 const { isLive, directUrl } = await this.getTrackStreamInfo(nextTrack.url);
 
                 if (isLive && directUrl) {
-                    logInfo(`Playing live stream directly via HLS/stream: ${nextTrack.url}`);
+                    if (this.textChannel) {
+                        this.textChannel.send(`🍊📡 Подключаюсь к трансляции...\n**${nextTrack.title}**`);
+                    }
+                    logInfo(`Playing live stream directly via HLS: ${nextTrack.url}`);
                     playTarget = directUrl;
                 } else {
+                    if (this.textChannel) {
+                        this.textChannel.send(config.messages.downloading.replace('{title}', nextTrack.title));
+                    }
                     logInfo(`Downloading track via yt-dlp: ${nextTrack.url}`);
                     const outputPathPattern = `temp/${filePrefix}.%(ext)s`;
                     await this.downloadViaYtDlp(nextTrack.url, outputPathPattern);
@@ -122,6 +124,9 @@ class GuildSession {
                     playTarget = tempFilePath;
                 }
             } else {
+                if (this.textChannel) {
+                    this.textChannel.send(config.messages.downloading.replace('{title}', nextTrack.title));
+                }
                 logInfo(`Downloading direct file: ${nextTrack.url}`);
                 tempFilePath = `temp/${filePrefix}.mp3`;
                 await this.downloadDirectFile(nextTrack.url, tempFilePath);
@@ -133,7 +138,10 @@ class GuildSession {
             }
 
             this.currentFilePath = tempFilePath;
-            const resource = createAudioResource(playTarget);
+            const resource = playTarget.startsWith('http://') || playTarget.startsWith('https://')
+                ? createAudioResource(playTarget, { inputType: InputType.Arbitrary })
+                : createAudioResource(playTarget);
+                
             this.player.play(resource);
             logInfo(`Started playing ${playTarget} in guild ${this.guildId}`);
         } catch (error) {

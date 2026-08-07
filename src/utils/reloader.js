@@ -26,6 +26,16 @@ function reloadModules(client) {
             }
         }
 
+        // Clear require cache for structures
+        const structuresPath = path.join(__dirname, '..', 'structures');
+        if (fs.existsSync(structuresPath)) {
+            const structureFiles = fs.readdirSync(structuresPath).filter(file => file.endsWith('.js'));
+            for (const file of structureFiles) {
+                const filePath = path.join(structuresPath, file);
+                delete require.cache[require.resolve(filePath)];
+            }
+        }
+
         // Reload commands and events on client
         client.loadCommands();
         client.loadEvents();

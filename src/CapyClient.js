@@ -3,7 +3,6 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const { logInfo, logError } = require('./utils/logger');
-const GuildSession = require('./structures/GuildSession');
 const { reloadModules } = require('./utils/reloader');
 
 class CapyClient extends Client {
@@ -53,7 +52,6 @@ class CapyClient extends Client {
     }
 
     loadEvents() {
-        // Remove previously registered dynamic events
         for (const [eventName, handler] of this.eventHandlers.entries()) {
             this.removeListener(eventName, handler);
         }
@@ -87,12 +85,19 @@ class CapyClient extends Client {
     }
 
     createSession(guildId, voiceChannelId, textChannelId) {
+        const guildSessionPath = path.join(__dirname, 'structures', 'GuildSession.js');
+        delete require.cache[require.resolve(guildSessionPath)];
+        const GuildSession = require(guildSessionPath);
         const session = new GuildSession(guildId, voiceChannelId, textChannelId);
         this.sessions.set(guildId, session);
         return session;
     }
 
     deleteSession(guildId) {
+        const session = this.sessions.get(guildId);
+        if (session) {
+            session.destroy();
+        }
         this.sessions.delete(guildId);
     }
 
