@@ -98,9 +98,8 @@ class GuildSession {
             const isYoutube = nextTrack.url.includes('youtube.com') || nextTrack.url.includes('youtu.be');
             const isSoundcloud = nextTrack.url.includes('soundcloud.com');
             const isTwitch = nextTrack.url.includes('twitch.tv');
-            const isMp4 = nextTrack.url.toLowerCase().split('?')[0].endsWith('.mp4');
 
-            if (isYoutube || isSoundcloud || isTwitch || isMp4) {
+            if (isYoutube || isSoundcloud || isTwitch) {
                 const streamUrl = await this.getTrackStreamInfo(nextTrack.url);
 
                 if (streamUrl) {
