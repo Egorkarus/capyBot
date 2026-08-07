@@ -1,4 +1,4 @@
-const { joinVoiceChannel, entersState, VoiceConnectionStatus, createAudioPlayer, createAudioResource, AudioPlayerStatus, NoSubscriberBehavior, getVoiceConnection, InputType } = require('@discordjs/voice');
+const { joinVoiceChannel, entersState, VoiceConnectionStatus, createAudioPlayer, createAudioResource, AudioPlayerStatus, NoSubscriberBehavior, getVoiceConnection, StreamType } = require('@discordjs/voice');
 const { AuditLogEvent } = require('discord.js');
 const fsPromises = require('fs/promises');
 const fs = require('fs');
@@ -140,7 +140,7 @@ class GuildSession {
 
             this.currentFilePath = tempFilePath;
             const resource = createAudioResource(playTarget, {
-                inputType: playTarget.startsWith('http') ? InputType.Arbitrary : undefined
+                inputType: playTarget.startsWith('http') ? StreamType.Arbitrary : undefined
             });
             this.player.play(resource);
             logInfo(`Started playing ${playTarget} in guild ${this.guildId}`);
