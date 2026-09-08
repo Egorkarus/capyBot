@@ -32,11 +32,11 @@ class GuildSession {
             logInfo(`[DEBUG-PLAYER] State transitioned from ${oldState.status} to ${newState.status}`);
             if (newState.status === AudioPlayerStatus.Idle) {
                 logInfo(`Audio player idle in guild ${this.guildId}`);
+                // Останавливаем живые процессы/потоки; файл почистит playNextTrack.
                 if (this.currentStreamJob) {
                     this.currentStreamJob.stop().catch(err => logError('Error stopping stream job', err));
                     this.currentStreamJob = null;
                 }
-                this.cleanupCurrentFile();
                 this.playNextTrack();
             }
         });
@@ -165,11 +165,10 @@ class GuildSession {
                     }
 
                     this.currentFilePath = null;
-                    const liveMime = nextTrack.liveOpus === true;
-                    // SteamStdout для live обычно уже Opus внутри webm; ffmpeg Discord транскодирует
-                    // произвольный контейнер. Arbitrary безопаснее, чем Opus, т.к. stdout не чистый opus.
+                    // stdout yt-dlp 一произвольный контейнер (webm/opus/m4a), поэтому Arbitrary:
+                    // @discordjs/voice через ffmpeg перекодирует в Opus для Discord.
                     const liveResource = createAudioResource(streamJob.stream, {
-                        inputType: liveMime ? StreamType.Opus : StreamType.Arbitrary
+                        inputType: StreamType.Arbitrary
                     });
                     this.player.play(liveResource);
                     logInfo(`Started live stream playback in guild ${this.guildId}`);
