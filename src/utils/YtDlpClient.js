@@ -3,16 +3,22 @@ const fs = require('fs');
 const config = require('../config');
 const { logError, logInfo } = require('./logger');
 
+function buildYtDlpArgs(baseArgs, url) {
+    return [...baseArgs, '--js-runtimes', `node:${process.execPath}`, '--', url];
+}
+
+function spawnYtDlp(baseArgs, url) {
+    return spawn('yt-dlp', buildYtDlpArgs(baseArgs, url));
+}
+
 class YtDlpClient {
     static createStreamJob(url) {
         return new Promise((resolve, reject) => {
-            const args = ['-f', 'bestaudio/best', '--no-playlist', '-o', '-'];
-            
             fs.access('cookies.txt', fs.constants.F_OK, (err) => {
+                const args = ['-f', 'bestaudio/best', '--no-playlist', '-o', '-'];
                 if (!err) args.push('--cookies', 'cookies.txt');
-                args.push('--', url);
-                
-                const ytDlp = spawn('yt-dlp', args);
+
+                const ytDlp = spawnYtDlp(args, url);
                 let stderrData = '';
                 let isResolved = false;
                 
@@ -104,9 +110,8 @@ class YtDlpClient {
 
             fs.access('cookies.txt', fs.constants.F_OK, (err) => {
                 if (!err) args.push('--cookies', 'cookies.txt');
-                args.push('--', url);
-                
-                const ytDlp = spawn('yt-dlp', args);
+
+                const ytDlp = spawnYtDlp(args, url);
                 let errorData = '';
                 let isCompleted = false;
                 
@@ -160,13 +165,11 @@ class YtDlpClient {
      */
     static async fetchInfo(url) {
         return new Promise((resolve) => {
-            const args = ['--dump-single-json', '--no-playlist', '--no-warnings'];
-            
             fs.access('cookies.txt', fs.constants.F_OK, (err) => {
+                const args = ['--dump-single-json', '--no-playlist', '--no-warnings'];
                 if (!err) args.push('--cookies', 'cookies.txt');
-                args.push('--', url);
-                
-                const ytDlp = spawn('yt-dlp', args);
+
+                const ytDlp = spawnYtDlp(args, url);
                 let jsonData = '';
                 const timeout = setTimeout(() => {
                     ytDlp.kill('SIGTERM');
