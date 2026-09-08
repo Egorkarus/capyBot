@@ -237,9 +237,16 @@ class GuildSession {
             this.player.play(resource);
             logInfo(`Started playing file in guild ${this.guildId}`);
         } catch (error) {
-            logError("Error in playNextTrack", error);
+            // Диагностика: логируем реальную ошибку (причину сбоя yt-dlp/скачивания),
+            // чтобы её было видно и в логах and можно было передать пользователю.
+            const errMsg = (error && error.message) ? error.message : String(error);
+            logError(`[download] Failed for URL in playNextTrack: ${errMsg}`);
+
             if (currentTextChannel) {
-                currentTextChannel.send(`${config.messages.downloadFail.replace('{title}', nextTrack.title)}`);
+                const baseMsg = config.messages.downloadFail.replace('{title}', nextTrack.title);
+                // Не выводим сами URL/чувствительные данные; только краткую причину.
+                const shortReason = errMsg.length > 180 ? errMsg.slice(0, 177) + '...' : errMsg;
+                currentTextChannel.send(`${baseMsg}\n_Причина: \`${shortReason}\`_`);
             }
 
             await this.cleanupCurrentFile();
