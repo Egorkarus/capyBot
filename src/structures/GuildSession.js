@@ -117,35 +117,108 @@ class GuildSession {
             const isYoutube = nextTrack.url.includes('youtube.com') || nextTrack.url.includes('youtu.be');
             const isSoundcloud = nextTrack.url.includes('soundcloud.com');
             const isTwitch = nextTrack.url.includes('twitch.tv');
+            const isPlatform = isYoutube || isSoundcloud || isTwitch;
 
-            if (isYoutube || isSoundcloud || isTwitch) {
-                try {
-                    const streamJob = await YtDlpClient.createStreamJob(nextTrack.url);
-                    this.currentStreamJob = streamJob;
+            // Вариант A: обычные платформенные треки скачиваем в файл (стабильно и играбельно),
+            // прямой live-стрим (raw stdout) оставляем только для реальных трансляций.
+            if (isPlatform) {
+                const isLive = nextTrack.isLive === true;
+                const effectiveTitle = nextTrack.title;
 
+                // Защита от "10-гигабайтных" потоков: обычное видео/аудио не длиннее лимита
+                // (длительность уже проверялась в play.js при добавлении; дублируем подстраховка
+                // на случай long треков, добавленных иным путём).
+                if (!isLive && nextTrack.trackDurationMs != null
+                    && nextTrack.trackDurationMs > config.limits.maxTrackDurationSeconds * 1000) {
+                    const minutes = Math.floor(config.limits.maxTrackDurationSeconds / 60);
                     if (currentTextChannel) {
-                        currentTextChannel.send(`🍊📡 Подключаюсь к трансляции...\n**${nextTrack.title}**`);
+                        currentTextChannel.send(config.messages.trackTooLong
+                            .replace('{minutes}', minutes)
+                            .replace('{title}', effectiveTitle));
                     }
-                    logInfo(`Playing stream directly via yt-dlp: ${nextTrack.url}`);
-                } catch (streamError) {
-                    logError('Failed to create stream, falling back to download', streamError);
-                    
-                    if (currentTextChannel) {
-                        currentTextChannel.send(`Не могу получить прямой поток для **${nextTrack.title}**, пробую скачать... 🍊📥`);
-                    }
-                    
-                    logInfo(`Downloading track via yt-dlp: ${nextTrack.url}`);
-                    const outputPathPattern = `temp/${filePrefix}.%(ext)s`;
-                    await YtDlpClient.downloadFile(nextTrack.url, outputPathPattern);
-                    
-                    const files = await fsPromises.readdir('temp');
-                    const matchedFile = files.find(f => f.startsWith(filePrefix));
-                    if (!matchedFile) throw new Error("Downloaded file not found on disk");
-                    
-                    tempFilePath = `temp/${matchedFile}`;
-                    playTarget = tempFilePath;
+                    this._scheduleNextAfterCurrent();
+                    return;
                 }
+
+                // Реальная live-трансляция: стримим через yt-dlp stdout без скачивания на диск.
+                if (isLive) {
+                    let streamJob;
+                    try {
+                        streamJob = await YtDlpClient.createStreamJob(nextTrack.url);
+                    } catch (streamError) {
+                        logError('Failed to start live stream job', streamError);
+                        if (currentTextChannel) {
+                            currentTextChannel.send(config.messages.liveStreamFail.replace('{title}', effectiveTitle));
+                        }
+                        this._scheduleNextAfterCurrent();
+                        return;
+                    }
+
+                    this.currentStreamJob = streamJob;
+                    if (currentTextChannel) {
+                        currentTextChannel.send(config.messages.liveStreamStarted.replace('{title}', effectiveTitle));
+                    }
+                    logInfo(`Playing live stream via yt-dlp stdout: ${nextTrack.url}`);
+
+                    if (this.connection && this.connection.state.status === VoiceConnectionStatus.Ready) {
+                        this.connection.rejoin();
+                    }
+
+                    this.currentFilePath = null;
+                    const liveMime = nextTrack.liveOpus === true;
+                    // SteamStdout для live обычно уже Opus внутри webm; ffmpeg Discord транскодирует
+                    // произвольный контейнер. Arbitrary безопаснее, чем Opus, т.к. stdout не чистый opus.
+                    const liveResource = createAudioResource(streamJob.stream, {
+                        inputType: liveMime ? StreamType.Opus : StreamType.Arbitrary
+                    });
+                    this.player.play(liveResource);
+                    logInfo(`Started live stream playback in guild ${this.guildId}`);
+                    return;
+                }
+
+                // Обычный трек: скачиваем аудио в файл.
+                if (currentTextChannel) {
+                    currentTextChannel.send(config.messages.downloading.replace('{title}', effectiveTitle));
+                }
+                logInfo(`Downloading track via yt-dlp: ${nextTrack.url}`);
+
+                const outputPathPattern = `temp/${filePrefix}.%(ext)s`;
+                try {
+                    await YtDlpClient.downloadFile(nextTrack.url, outputPathPattern, config.limits.maxTrackDurationSeconds * 1000);
+                } catch (downloadError) {
+                    if (downloadError.message === 'TOO_LONG') {
+                        const minutes = Math.floor(config.limits.maxTrackDurationSeconds / 60);
+                        if (currentTextChannel) {
+                            currentTextChannel.send(config.messages.trackTooLong
+                                .replace('{minutes}', minutes)
+                                .replace('{title}', effectiveTitle));
+                        }
+                        this._scheduleNextAfterCurrent();
+                        return;
+                    }
+                    throw downloadError;
+                }
+
+                const files = await fsPromises.readdir('temp');
+                const matchedFile = files.find(f => f.startsWith(filePrefix));
+                if (!matchedFile) throw new Error("Downloaded file not found on disk");
+
+                tempFilePath = `temp/${matchedFile}`;
+
+                // Контроль реального размера файла на диске (лимит скачивания).
+                const fileStat = await fsPromises.stat(tempFilePath);
+                if (fileStat.size > config.limits.maxDownloadBytes) {
+                    await fsPromises.rm(tempFilePath, { force: true }).catch(() => {});
+                    if (currentTextChannel) {
+                        currentTextChannel.send(config.messages.trackTooBig.replace('{title}', effectiveTitle));
+                    }
+                    this._scheduleNextAfterCurrent();
+                    return;
+                }
+
+                playTarget = tempFilePath;
             } else {
+                // Прямая ссылка/вложение: качаем файл.
                 if (currentTextChannel) {
                     currentTextChannel.send(config.messages.downloading.replace('{title}', nextTrack.title));
                 }
@@ -159,32 +232,37 @@ class GuildSession {
                 this.connection.rejoin();
             }
 
-            this.currentFilePath = tempFilePath;
-            
-            let resource;
-            if (this.currentStreamJob) {
-                resource = createAudioResource(this.currentStreamJob.stream);
-            } else {
-                resource = createAudioResource(playTarget);
-            }
+            this.currentFilePath = playTarget;
+            // mp3/opus с диска транскодируются Discord'ом автоматически (встроенный ffmpeg).
+            const resource = createAudioResource(playTarget);
             this.player.play(resource);
-            logInfo(`Started playing in guild ${this.guildId}`);
+            logInfo(`Started playing file in guild ${this.guildId}`);
         } catch (error) {
             logError("Error in playNextTrack", error);
             if (currentTextChannel) {
-                currentTextChannel.send(`Не могу воспроизвести трек **${nextTrack.title}**, пропускаю. 🍊`);
+                currentTextChannel.send(`${config.messages.downloadFail.replace('{title}', nextTrack.title)}`);
             }
-            
+
             await this.cleanupCurrentFile();
-            
-            if (this.tracks.length > 0) {
-                setTimeout(() => this.playNextTrack(), 1000);
-            }
+            this._scheduleNextAfterCurrent();
         }
     }
 
-    addTrack(url, title, textChannel = null, userId = null) {
-        this.tracks.push({ url, title, textChannel, userId });
+    _scheduleNextAfterCurrent() {
+        if (this.tracks.length > 0) {
+            setTimeout(() => this.playNextTrack(), 1000);
+        }
+    }
+
+    addTrack(url, title, textChannel = null, userId = null, meta = {}) {
+        this.tracks.push({
+            url,
+            title,
+            textChannel,
+            userId,
+            isLive: meta.isLive === true,
+            trackDurationMs: meta.durationMs != null ? meta.durationMs : null
+        });
         if (this.player.state.status === AudioPlayerStatus.Idle) {
             this.playNextTrack();
         }
@@ -309,20 +387,26 @@ class GuildSession {
 
 
 
-    static async fetchTrackTitle(url) {
+    /**
+     * Получает метаданные трека (title, длительность, live-статус).
+     * Для платформ использует yt-dlp fetchInfo; для прямых URL выводит название из пути.
+     * @returns {Promise<{title: string, durationMs: number|null, isLive: boolean}>}
+     */
+    static async fetchTrackInfo(url) {
         const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
         const isSoundcloud = url.includes('soundcloud.com');
         const isTwitch = url.includes('twitch.tv');
-        
+
         if (isYoutube || isSoundcloud || isTwitch) {
-            return await YtDlpClient.fetchTitle(url);
+            return await YtDlpClient.fetchInfo(url);
         } else {
             try {
                 const parsedUrl = new URL(url);
                 const pathParts = parsedUrl.pathname.split('/');
-                return decodeURIComponent(pathParts[pathParts.length - 1]) || url;
+                const filename = decodeURIComponent(pathParts[pathParts.length - 1]) || url;
+                return { title: filename, durationMs: null, isLive: false };
             } catch {
-                return url;
+                return { title: url, durationMs: null, isLive: false };
             }
         }
     }

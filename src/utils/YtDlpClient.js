@@ -86,7 +86,7 @@ class YtDlpClient {
         });
     }
 
-    static downloadFile(url, outputPathPattern) {
+    static downloadFile(url, outputPathPattern, maxDurationMs = null) {
         return new Promise((resolve, reject) => {
             const args = [
                 '-f', 'bestaudio/best',
@@ -94,9 +94,14 @@ class YtDlpClient {
                 '--audio-format', 'mp3',
                 '--no-video',
                 '--no-playlist',
+                '--no-progress',
                 '-o', outputPathPattern
             ];
-            
+
+            if (maxDurationMs != null) {
+                args.push('--match-filter', `duration < ${Math.ceil(maxDurationMs / 1000)}`);
+            }
+
             fs.access('cookies.txt', fs.constants.F_OK, (err) => {
                 if (!err) args.push('--cookies', 'cookies.txt');
                 args.push('--', url);
@@ -132,8 +137,10 @@ class YtDlpClient {
                     if (!isCompleted) {
                         isCompleted = true;
                         clearTimeout(timeout);
-                        
-                        if (code === 0) {
+                        // Для файлов, отсечённых фильтром длительности, yt-dlp выходит с кодом 101.
+                        if (code === 101) {
+                            reject(new Error('TOO_LONG'));
+                        } else if (code === 0) {
                             resolve();
                         } else {
                             reject(new Error(`yt-dlp завершился с кодом ${code}. Ошибка: ${errorData.trim() || 'Unknown'}`));
@@ -144,34 +151,58 @@ class YtDlpClient {
         });
     }
 
-    static async fetchTitle(url) {
+    /**
+     * Получает метаданные трека (title, длительность, isLive) одним вызовом yt-dlp.
+     * @param {string} url
+     * @returns {Promise<{title: string, durationMs: number|null, isLive: boolean}>}
+     *   При любой ошибке вернёт фолбэк с title = исходным URL, durationMs = null, isLive = false,
+     *   чтобы поток не падал из-за недоступности метаданных.
+     */
+    static async fetchInfo(url) {
         return new Promise((resolve) => {
-            const args = ['--print', 'title', '--no-playlist'];
+            const args = ['--dump-single-json', '--no-playlist', '--no-warnings'];
             
             fs.access('cookies.txt', fs.constants.F_OK, (err) => {
                 if (!err) args.push('--cookies', 'cookies.txt');
                 args.push('--', url);
                 
                 const ytDlp = spawn('yt-dlp', args);
-                let titleData = '';
-                
+                let jsonData = '';
                 const timeout = setTimeout(() => {
                     ytDlp.kill('SIGTERM');
-                    resolve(url);
+                    resolve({ title: url, durationMs: null, isLive: false });
                 }, 15000);
 
                 ytDlp.stdout.on('data', (chunk) => {
-                    titleData += chunk.toString();
+                    jsonData += chunk.toString();
+                    if (jsonData.length > 50000) {
+                        ytDlp.kill('SIGTERM');
+                    }
                 });
 
                 ytDlp.on('close', (code) => {
                     clearTimeout(timeout);
-                    resolve(code === 0 && titleData.trim() ? titleData.trim() : url);
+                    if (code !== 0 || !jsonData.trim()) {
+                        resolve({ title: url, durationMs: null, isLive: false });
+                        return;
+                    }
+                    try {
+                        const info = JSON.parse(jsonData);
+                        const durationMs = (info.duration ?? null) != null ? Math.round(info.duration * 1000) : null;
+                        // is_live или был_in_данных; в yt-dlp это info.is_live
+                        resolve({
+                            title: info.title || url,
+                            durationMs,
+                            isLive: Boolean(info.live_status === 'is_live' || info.is_live)
+                        });
+                    } catch (err) {
+                        resolve({ title: url, durationMs: null, isLive: false });
+                    }
                 });
 
                 ytDlp.on('error', () => {
                     clearTimeout(timeout);
-                    resolve(url);
+                    resolve({ title: url, durationMs: null, isLive: false });
                 });
             });
         });

@@ -80,15 +80,31 @@ module.exports = {
 
         try {
             const trackUrl = normalizedSource.url.href;
-            const title = await GuildSession.fetchTrackTitle(trackUrl);
+            const isPlatform = ['youtube.com', 'youtu.be', 'soundcloud.com', 'twitch.tv']
+                .some(d => normalizedSource.host === d || normalizedSource.host.endsWith('.' + d));
+
+            const info = await GuildSession.fetchTrackInfo(trackUrl);
+
+            // Для platform-источников сразу отклоняем слишком длинные треки до добавления в очередь.
+            if (isPlatform && !info.isLive && info.durationMs != null
+                && info.durationMs > client.config.limits.maxTrackDurationSeconds * 1000) {
+                const minutes = Math.floor(client.config.limits.maxTrackDurationSeconds / 60);
+                await statusMessage.edit(client.config.messages.trackTooLong.replace('{minutes}', minutes));
+                return;
+            }
+
             const isIdle = session.player.state.status === 'idle';
-            
-            session.addTrack(trackUrl, title, message.channel, message.author.id);
+            // Не подставляем сам URL в название.
+            const displayTitle = info.title !== trackUrl ? info.title : trackUrl;
+            session.addTrack(trackUrl, displayTitle, message.channel, message.author.id, {
+                isLive: info.isLive === true,
+                durationMs: info.durationMs
+            });
 
             if (isIdle) {
-                await statusMessage.edit(client.config.messages.playNowPlaying.replace('{title}', title));
+                await statusMessage.edit(client.config.messages.playNowPlaying.replace('{title}', displayTitle));
             } else {
-                await statusMessage.edit(client.config.messages.playQueued.replace('{title}', title));
+                await statusMessage.edit(client.config.messages.playQueued.replace('{title}', displayTitle));
             }
         } catch (playError) {
             logError("Error fetching metadata or playing audio", playError);
