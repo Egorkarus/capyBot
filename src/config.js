@@ -7,7 +7,40 @@ module.exports = {
         joinReady: 5000,
         reconnectMaxAttempts: 5,
         reconnectBaseDelay: 2000,
-        kickCheckWindowMs: 30000
+        kickCheckWindowMs: 30000,
+        httpDownloadTimeoutMs: 60000,
+        ytDlpTimeoutMs: 90000
+    },
+    security: {
+        allowedDomains: [
+            'youtube.com',
+            'youtu.be',
+            'soundcloud.com',
+            'twitch.tv',
+            'sndcdn.com',
+            'googlevideo.com',
+            'ytimg.com'
+        ],
+        allowedFileExtensions: ['.mp3', '.mp4', '.wav', '.ogg', '.m4a', '.flac', '.webm'],
+        maxFileSizeBytes: 100 * 1024 * 1024,
+        maxRedirects: 5,
+        allowedMimeTypes: [
+            'audio/mpeg',
+            'audio/mp4',
+            'audio/wav',
+            'audio/ogg',
+            'audio/webm',
+            'audio/flac',
+            'video/mp4',
+            'video/webm',
+            'application/octet-stream'
+        ]
+    },
+    limits: {
+        maxTracksPerGuild: 50,
+        maxTracksPerUser: 10,
+        playRateLimitWindowMs: 60000,
+        maxPlayRequestsPerWindow: 5
     },
     messages: {
         noPermission: "Ты кто такой? Только вожаки стаи могут мной командовать. 🍊",

@@ -12,7 +12,7 @@ module.exports = {
             return;
         }
 
-        session.destroy();
+        await session.destroy();
         client.deleteSession(message.guild.id);
         
         logInfo(`Left voice channel in guild ${message.guild.id}`);

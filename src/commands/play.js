@@ -1,6 +1,7 @@
 const { joinVoiceChannel, entersState, VoiceConnectionStatus } = require('@discordjs/voice');
 const { logError, logInfo } = require('../utils/logger');
 const GuildSession = require('../structures/GuildSession');
+const TrackSourceValidator = require('../utils/TrackSourceValidator');
 
 module.exports = {
     name: 'play',
@@ -14,31 +15,45 @@ module.exports = {
             return;
         }
 
-        const attachment = message.attachments.first();
-        const fileUrl = attachment ? attachment.url : args[0];
-        
-        const isYoutubeUrl = fileUrl && (fileUrl.includes('youtube.com') || fileUrl.includes('youtu.be'));
-        const isSoundcloudUrl = fileUrl && fileUrl.includes('soundcloud.com');
-        const isTwitchUrl = fileUrl && fileUrl.includes('twitch.tv');
-        
-        let isAudioOrVideoUrl = false;
-        if (fileUrl) {
-            try {
-                const parsedUrl = new URL(fileUrl);
-                const ext = parsedUrl.pathname.toLowerCase();
-                isAudioOrVideoUrl = ext.endsWith('.mp3') || ext.endsWith('.mp4') || ext.endsWith('.wav') || ext.endsWith('.ogg') || ext.endsWith('.m4a') || ext.endsWith('.flac');
-            } catch (err) {
-                const cleanUrl = fileUrl.toLowerCase().split('?')[0];
-                isAudioOrVideoUrl = cleanUrl.endsWith('.mp3') || cleanUrl.endsWith('.mp4') || cleanUrl.endsWith('.wav') || cleanUrl.endsWith('.ogg');
-            }
-        }
-
-        if (!fileUrl || (!isAudioOrVideoUrl && !isYoutubeUrl && !isSoundcloudUrl && !isTwitchUrl)) {
-            await message.reply(client.config.messages.playInvalidUrl);
+        const rateLimitCheck = client.rateLimiter.checkUserLimit(message.author.id);
+        if (!rateLimitCheck.allowed) {
+            await message.reply(rateLimitCheck.reason);
             return;
         }
 
+        const attachment = message.attachments.first();
+        let validation;
+        let normalizedSource;
+
+        if (attachment) {
+            validation = TrackSourceValidator.validateAttachment(attachment);
+            if (!validation.valid) {
+                await message.reply(`❌ ${validation.reason}`);
+                return;
+            }
+            normalizedSource = validation.normalized;
+        } else {
+            const fileUrl = args[0];
+            if (!fileUrl) {
+                await message.reply(client.config.messages.playInvalidUrl);
+                return;
+            }
+
+            validation = TrackSourceValidator.validate(fileUrl);
+            if (!validation.valid) {
+                await message.reply(`❌ ${validation.reason}`);
+                return;
+            }
+            normalizedSource = validation.normalized;
+        }
+
         let session = client.getSession(message.guild.id);
+        
+        const queueLimitCheck = client.rateLimiter.checkQueueLimit(message.guild.id, message.author.id, session);
+        if (!queueLimitCheck.allowed) {
+            await message.reply(queueLimitCheck.reason);
+            return;
+        }
         
         if (!session) {
             session = client.createSession(message.guild.id, voiceChannel.id, message.channel.id);
@@ -64,10 +79,11 @@ module.exports = {
         const statusMessage = await message.reply(client.config.messages.playFetching);
 
         try {
-            const title = await GuildSession.fetchTrackTitle(fileUrl);
+            const trackUrl = normalizedSource.url.href;
+            const title = await GuildSession.fetchTrackTitle(trackUrl);
             const isIdle = session.player.state.status === 'idle';
             
-            session.addTrack(fileUrl, title, message.channel);
+            session.addTrack(trackUrl, title, message.channel, message.author.id);
 
             if (isIdle) {
                 await statusMessage.edit(client.config.messages.playNowPlaying.replace('{title}', title));

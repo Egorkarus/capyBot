@@ -19,6 +19,11 @@ class CapyClient extends Client {
         this.sessions = new Map();
         this.config = config;
         this.eventHandlers = new Map();
+        
+        const PlayRateLimiter = require('./utils/PlayRateLimiter');
+        this.rateLimiter = new PlayRateLimiter();
+        
+        setInterval(() => this.rateLimiter.cleanup(), 60000);
     }
 
     async init() {

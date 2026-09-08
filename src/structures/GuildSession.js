@@ -2,11 +2,10 @@ const { joinVoiceChannel, entersState, VoiceConnectionStatus, createAudioPlayer,
 const { AuditLogEvent } = require('discord.js');
 const fsPromises = require('fs/promises');
 const fs = require('fs');
-const http = require('http');
-const https = require('https');
-const { spawn } = require('child_process');
 const config = require('../config');
 const { logInfo, logError } = require('../utils/logger');
+const SafeHttpClient = require('../utils/SafeHttpClient');
+const YtDlpClient = require('../utils/YtDlpClient');
 
 class GuildSession {
     constructor(guildId, voiceChannelId, textChannelId) {
@@ -25,15 +24,17 @@ class GuildSession {
         this.subscription = null;
         this.tracks = [];
         this.currentFilePath = null;
+        this.currentStreamJob = null;
         this.textChannel = null;
+        this.isProcessing = false;
 
         this.player.on('stateChange', (oldState, newState) => {
             logInfo(`[DEBUG-PLAYER] State transitioned from ${oldState.status} to ${newState.status}`);
             if (newState.status === AudioPlayerStatus.Idle) {
                 logInfo(`Audio player idle in guild ${this.guildId}`);
-                if (this.currentStreamProcess) {
-                    this.currentStreamProcess.kill();
-                    this.currentStreamProcess = null;
+                if (this.currentStreamJob) {
+                    this.currentStreamJob.stop().catch(err => logError('Error stopping stream job', err));
+                    this.currentStreamJob = null;
                 }
                 this.cleanupCurrentFile();
                 this.playNextTrack();
@@ -82,6 +83,21 @@ class GuildSession {
     }
 
     async playNextTrack() {
+        if (this.isProcessing) {
+            logInfo(`Already processing track in guild ${this.guildId}, skipping duplicate call`);
+            return;
+        }
+        
+        this.isProcessing = true;
+        
+        try {
+            await this._playNextTrackInternal();
+        } finally {
+            this.isProcessing = false;
+        }
+    }
+
+    async _playNextTrackInternal() {
         await this.cleanupCurrentFile();
 
         if (this.tracks.length === 0) {
@@ -103,21 +119,24 @@ class GuildSession {
             const isTwitch = nextTrack.url.includes('twitch.tv');
 
             if (isYoutube || isSoundcloud || isTwitch) {
-                const streamProcess = await this.createYtDlpStream(nextTrack.url);
+                try {
+                    const streamJob = await YtDlpClient.createStreamJob(nextTrack.url);
+                    this.currentStreamJob = streamJob;
 
-                if (streamProcess) {
                     if (currentTextChannel) {
                         currentTextChannel.send(`🍊📡 Подключаюсь к трансляции...\n**${nextTrack.title}**`);
                     }
-                    logInfo(`Playing stream directly via HLS: ${nextTrack.url}`);
-                    this.currentStreamProcess = streamProcess;
-                } else {
+                    logInfo(`Playing stream directly via yt-dlp: ${nextTrack.url}`);
+                } catch (streamError) {
+                    logError('Failed to create stream, falling back to download', streamError);
+                    
                     if (currentTextChannel) {
                         currentTextChannel.send(`Не могу получить прямой поток для **${nextTrack.title}**, пробую скачать... 🍊📥`);
                     }
+                    
                     logInfo(`Downloading track via yt-dlp: ${nextTrack.url}`);
                     const outputPathPattern = `temp/${filePrefix}.%(ext)s`;
-                    await this.downloadViaYtDlp(nextTrack.url, outputPathPattern);
+                    await YtDlpClient.downloadFile(nextTrack.url, outputPathPattern);
                     
                     const files = await fsPromises.readdir('temp');
                     const matchedFile = files.find(f => f.startsWith(filePrefix));
@@ -132,7 +151,7 @@ class GuildSession {
                 }
                 logInfo(`Downloading direct file: ${nextTrack.url}`);
                 tempFilePath = `temp/${filePrefix}.mp3`;
-                await this.downloadDirectFile(nextTrack.url, tempFilePath);
+                await SafeHttpClient.download(nextTrack.url, tempFilePath);
                 playTarget = tempFilePath;
             }
 
@@ -143,24 +162,29 @@ class GuildSession {
             this.currentFilePath = tempFilePath;
             
             let resource;
-            if (this.currentStreamProcess) {
-                resource = createAudioResource(this.currentStreamProcess.stdout);
+            if (this.currentStreamJob) {
+                resource = createAudioResource(this.currentStreamJob.stream);
             } else {
                 resource = createAudioResource(playTarget);
             }
             this.player.play(resource);
-            logInfo(`Started playing ${playTarget} in guild ${this.guildId}`);
+            logInfo(`Started playing in guild ${this.guildId}`);
         } catch (error) {
             logError("Error in playNextTrack", error);
             if (currentTextChannel) {
                 currentTextChannel.send(`Не могу воспроизвести трек **${nextTrack.title}**, пропускаю. 🍊`);
             }
-            this.playNextTrack();
+            
+            await this.cleanupCurrentFile();
+            
+            if (this.tracks.length > 0) {
+                setTimeout(() => this.playNextTrack(), 1000);
+            }
         }
     }
 
-    addTrack(url, title, textChannel = null) {
-        this.tracks.push({ url, title, textChannel });
+    addTrack(url, title, textChannel = null, userId = null) {
+        this.tracks.push({ url, title, textChannel, userId });
         if (this.player.state.status === AudioPlayerStatus.Idle) {
             this.playNextTrack();
         }
@@ -183,19 +207,22 @@ class GuildSession {
     async stop() {
         this.tracks = [];
         this.player.stop();
-        if (this.currentStreamProcess) {
-            this.currentStreamProcess.kill();
-            this.currentStreamProcess = null;
+        
+        if (this.currentStreamJob) {
+            await this.currentStreamJob.stop();
+            this.currentStreamJob = null;
         }
+        
         if (this.subscription) {
             this.subscription.unsubscribe();
             this.subscription = null;
         }
+        
         await this.cleanupCurrentFile();
     }
 
-    destroy() {
-        this.stop();
+    async destroy() {
+        await this.stop();
         if (this.connection) {
             this.connection.destroy();
         }
@@ -280,110 +307,24 @@ class GuildSession {
         }
     }
 
-    createYtDlpStream(url) {
-        return new Promise((resolve) => {
-            const args = ['-f', 'bestaudio/best', '--no-playlist', '-o', '-'];
-            fs.access('cookies.txt', fs.constants.F_OK, (err) => {
-                if (!err) args.push('--cookies', 'cookies.txt');
-                args.push('--', url);
-                const ytDlp = spawn('yt-dlp', args);
-                
-                // We resolve immediately with the process so the player can pipe stdout
-                resolve(ytDlp);
-                
-                ytDlp.stderr.on('data', data => {
-                    const line = data.toString();
-                    if (line.includes('ERROR:')) {
-                        logError(`yt-dlp error: ${line}`);
-                    }
-                });
-            });
-        });
-    }
 
-    downloadViaYtDlp(url, outputPathPattern) {
-        return new Promise((resolve, reject) => {
-            const args = ['-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--no-video', '--no-playlist', '--js-runtimes', 'node', '-o', outputPathPattern];
-            fs.access('cookies.txt', fs.constants.F_OK, (err) => {
-                if (!err) args.push('--cookies', 'cookies.txt');
-                args.push('--', url);
-                const ytDlp = spawn('yt-dlp', args);
-                let errorData = '';
-                ytDlp.stderr.on('data', chunk => errorData += chunk.toString());
-                ytDlp.on('error', reject);
-                ytDlp.on('close', code => {
-                    if (code === 0) resolve();
-                    else reject(new Error(`yt-dlp exited with code ${code}. Error: ${errorData.trim() || 'Unknown'}`));
-                });
-            });
-        });
-    }
-
-    downloadDirectFile(url, outputPath) {
-        return new Promise((resolve, reject) => {
-            this.fetchAudioStream(url).then(response => {
-                const fileStream = fs.createWriteStream(outputPath);
-                response.pipe(fileStream);
-                fileStream.on('finish', () => {
-                    fileStream.close();
-                    resolve();
-                });
-                fileStream.on('error', error => {
-                    fsPromises.unlink(outputPath).catch(()=>{});
-                    reject(error);
-                });
-            }).catch(reject);
-        });
-    }
-
-    fetchAudioStream(url, redirectCount = 0) {
-        return new Promise((resolve, reject) => {
-            if (redirectCount > 5) return reject(new Error("Too many redirects"));
-            try {
-                const parsedUrl = new URL(url);
-                const client = parsedUrl.protocol === 'https:' ? https : http;
-                client.get(parsedUrl.href, (response) => {
-                    if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-                        const redirectUrl = new URL(response.headers.location, parsedUrl.href).href;
-                        return resolve(this.fetchAudioStream(redirectUrl, redirectCount + 1));
-                    }
-                    if (response.statusCode !== 200) {
-                        return reject(new Error(`Status code: ${response.statusCode}`));
-                    }
-                    resolve(response);
-                }).on('error', reject);
-            } catch (err) {
-                reject(err);
-            }
-        });
-    }
 
     static async fetchTrackTitle(url) {
-        return new Promise((resolve) => {
-            const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
-            const isSoundcloud = url.includes('soundcloud.com');
-            const isTwitch = url.includes('twitch.tv');
-            if (isYoutube || isSoundcloud || isTwitch) {
-                const args = ['--print', 'title', '--no-playlist', '--js-runtimes', 'node'];
-                fs.access('cookies.txt', fs.constants.F_OK, (err) => {
-                    if (!err) args.push('--cookies', 'cookies.txt');
-                    args.push('--', url);
-                    const ytDlp = spawn('yt-dlp', args);
-                    let titleData = '';
-                    ytDlp.stdout.on('data', chunk => titleData += chunk.toString());
-                    ytDlp.on('close', code => resolve(code === 0 && titleData.trim() ? titleData.trim() : url));
-                    ytDlp.on('error', () => resolve(url));
-                });
-            } else {
-                try {
-                    const parsedUrl = new URL(url);
-                    const pathParts = parsedUrl.pathname.split('/');
-                    resolve(decodeURIComponent(pathParts[pathParts.length - 1]) || url);
-                } catch {
-                    resolve(url);
-                }
+        const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
+        const isSoundcloud = url.includes('soundcloud.com');
+        const isTwitch = url.includes('twitch.tv');
+        
+        if (isYoutube || isSoundcloud || isTwitch) {
+            return await YtDlpClient.fetchTitle(url);
+        } else {
+            try {
+                const parsedUrl = new URL(url);
+                const pathParts = parsedUrl.pathname.split('/');
+                return decodeURIComponent(pathParts[pathParts.length - 1]) || url;
+            } catch {
+                return url;
             }
-        });
+        }
     }
 }
 
