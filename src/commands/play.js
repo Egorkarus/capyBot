@@ -3,6 +3,9 @@ const { logError, logInfo } = require('../utils/logger');
 const GuildSession = require('../structures/GuildSession');
 const TrackSourceValidator = require('../utils/TrackSourceValidator');
 
+// Резервный лимит длительности (30 мин), если config.limits недоступен.
+const FALLBACK_DURATION_LIMIT_SECONDS = 1800;
+
 module.exports = {
     name: 'play',
     adminOnly: false,
@@ -86,9 +89,14 @@ module.exports = {
             const info = await GuildSession.fetchTrackInfo(trackUrl);
 
             // Для platform-источников сразу отклоняем слишком длинные треки до добавления в очередь.
+            // Защита от отсутствия config.limits в устаревшем контейнерном конфиге.
+            const durationLimitSeconds = (client.config.limits && client.config.limits.maxTrackDurationSeconds)
+                ? client.config.limits.maxTrackDurationSeconds
+                : FALLBACK_DURATION_LIMIT_SECONDS;
+
             if (isPlatform && !info.isLive && info.durationMs != null
-                && info.durationMs > client.config.limits.maxTrackDurationSeconds * 1000) {
-                const minutes = Math.floor(client.config.limits.maxTrackDurationSeconds / 60);
+                && info.durationMs > durationLimitSeconds * 1000) {
+                const minutes = Math.floor(durationLimitSeconds / 60);
                 await statusMessage.edit(client.config.messages.trackTooLong.replace('{minutes}', minutes));
                 return;
             }

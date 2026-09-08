@@ -7,6 +7,28 @@ const { logInfo, logError } = require('../utils/logger');
 const SafeHttpClient = require('../utils/SafeHttpClient');
 const YtDlpClient = require('../utils/YtDlpClient');
 
+// Резервные значения лимитов на случай, если config.limits не загрузился
+// (защита от TypeError при частично устаревшем конфиге в контейнере).
+const FALLBACK_LIMITS = {
+    maxTrackDurationSeconds: 1800, // 30 мин
+    maxDownloadBytes: 70 * 1024 * 1024
+};
+
+const getDurationLimitMs = () =>
+    (config.limits && config.limits.maxTrackDurationSeconds)
+        ? config.limits.maxTrackDurationSeconds * 1000
+        : FALLBACK_LIMITS.maxTrackDurationSeconds * 1000;
+
+const getDurationLimitSeconds = () =>
+    (config.limits && config.limits.maxTrackDurationSeconds)
+        ? config.limits.maxTrackDurationSeconds
+        : FALLBACK_LIMITS.maxTrackDurationSeconds;
+
+const getDownloadLimitBytes = () =>
+    (config.limits && config.limits.maxDownloadBytes)
+        ? config.limits.maxDownloadBytes
+        : FALLBACK_LIMITS.maxDownloadBytes;
+
 class GuildSession {
     constructor(guildId, voiceChannelId, textChannelId) {
         this.guildId = guildId;
@@ -129,8 +151,8 @@ class GuildSession {
                 // (длительность уже проверялась в play.js при добавлении; дублируем подстраховка
                 // на случай long треков, добавленных иным путём).
                 if (!isLive && nextTrack.trackDurationMs != null
-                    && nextTrack.trackDurationMs > config.limits.maxTrackDurationSeconds * 1000) {
-                    const minutes = Math.floor(config.limits.maxTrackDurationSeconds / 60);
+                    && nextTrack.trackDurationMs > getDurationLimitMs()) {
+                    const minutes = Math.floor(getDurationLimitSeconds() / 60);
                     if (currentTextChannel) {
                         currentTextChannel.send(config.messages.trackTooLong
                             .replace('{minutes}', minutes)
@@ -183,10 +205,10 @@ class GuildSession {
 
                 const outputPathPattern = `temp/${filePrefix}.%(ext)s`;
                 try {
-                    await YtDlpClient.downloadFile(nextTrack.url, outputPathPattern, config.limits.maxTrackDurationSeconds * 1000);
+                    await YtDlpClient.downloadFile(nextTrack.url, outputPathPattern, getDurationLimitMs());
                 } catch (downloadError) {
                     if (downloadError.message === 'TOO_LONG') {
-                        const minutes = Math.floor(config.limits.maxTrackDurationSeconds / 60);
+                        const minutes = Math.floor(getDurationLimitSeconds() / 60);
                         if (currentTextChannel) {
                             currentTextChannel.send(config.messages.trackTooLong
                                 .replace('{minutes}', minutes)
@@ -206,7 +228,7 @@ class GuildSession {
 
                 // Контроль реального размера файла на диске (лимит скачивания).
                 const fileStat = await fsPromises.stat(tempFilePath);
-                if (fileStat.size > config.limits.maxDownloadBytes) {
+                if (fileStat.size > getDownloadLimitBytes()) {
                     await fsPromises.rm(tempFilePath, { force: true }).catch(() => {});
                     if (currentTextChannel) {
                         currentTextChannel.send(config.messages.trackTooBig.replace('{title}', effectiveTitle));
