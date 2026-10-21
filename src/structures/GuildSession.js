@@ -1,5 +1,6 @@
 const { joinVoiceChannel, entersState, VoiceConnectionStatus, createAudioPlayer, createAudioResource, AudioPlayerStatus, NoSubscriberBehavior, StreamType } = require('@discordjs/voice');
 const { AuditLogEvent } = require('discord.js');
+const fs = require('fs');
 const fsPromises = require('fs/promises');
 const config = require('../config');
 const logger = require('../utils/logger');
@@ -10,7 +11,7 @@ const logDebug = typeof logger.logDebug === 'function' ? logger.logDebug : () =>
 const SafeHttpClient = require('../utils/SafeHttpClient');
 const YtDlpClient = require('../utils/YtDlpClient');
 const PlatformSource = require('../utils/PlatformSource');
-const { resolvePlaybackOptions } = require('../utils/AudioInputType');
+const { isOpusContainer, readOpusChannels } = require('../utils/AudioInputType');
 
 // Резервные значения лимитов на случай, если config.limits не загрузился
 // (защита от TypeError при частично устаревшем конфиге в контейнере).
@@ -395,8 +396,8 @@ class GuildSession {
             }
 
             this.currentFilePath = tempFilePath;
-            // opus/ogg отдаём напрямую (без ffmpeg), остальные форматы — через встроенный ffmpeg.
-            const resource = createAudioResource(tempFilePath, resolvePlaybackOptions(tempFilePath));
+            // opus stereo отдаём потоком без ffmpeg, остальное — прежним путём через ffmpeg.
+            const resource = await this._createFileResource(tempFilePath);
             this.currentResource = resource;
             this.player.play(resource);
             this._clearPendingTimers();
@@ -480,6 +481,22 @@ class GuildSession {
             this.connectionRetryCount += 1;
             this._scheduleNextAfterCurrent();
         }
+    }
+
+    async _createFileResource(filePath) {
+        // Discord-пайплайн OggOpus рассчитан на stereo 48k: играем без ffmpeg
+        // только когда контейнер ogg/opus и в заголовке ровно 2 канала.
+        // Моно и прочие форматы уходят в ffmpeg-fallback (создание ресурса по пути).
+        if (isOpusContainer(filePath)) {
+            const channels = await readOpusChannels(filePath);
+            if (channels === 2) {
+                const stream = fs.createReadStream(filePath);
+                stream.on('error', error => logError(`Audio file stream failed: ${filePath}`, error));
+                return createAudioResource(stream, { inputType: StreamType.OggOpus });
+            }
+        }
+
+        return createAudioResource(filePath);
     }
 
     async _ensureConnectionReady() {

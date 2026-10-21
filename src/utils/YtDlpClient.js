@@ -150,13 +150,12 @@ class YtDlpClient {
 
     static buildDownloadArgs(url, options = {}) {
         const outputPathPattern = options.outputPathPattern || '%(title)s.%(ext)s';
+        // `audio_channels` — поле формата (не CLI-опция): сначала пробуем стерео,
+        // иначе лучший доступный.
         const args = [
-            '-f', 'bestaudio/best',
+            '-f', 'bestaudio[audio_channels=2]/bestaudio',
             '-x',
             '--audio-format', 'opus',
-            // Discord ждёт стерео: приводим каналы на этапе скачивания,
-            // чтобы не транскодировать в горячем пути воспроизведения.
-            '--audio-channels', '2',
             '--no-video',
             '--no-playlist',
             '-o', outputPathPattern

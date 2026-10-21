@@ -31,10 +31,10 @@ test('buildInfoArgs добавляет --cookies только при перед�
 test('buildDownloadArgs: bestaudio, opus и фильтр длительности', () => {
     const args = YtDlpClient.buildDownloadArgs(SAMPLE_URL, { maxDurationMs: 60000 });
 
-    assert.equal(getArgumentAfter(args, '-f'), 'bestaudio/best');
+    assert.equal(getArgumentAfter(args, '-f'), 'bestaudio[audio_channels=2]/bestaudio');
     assert.ok(args.includes('-x'));
     assert.equal(getArgumentAfter(args, '--audio-format'), 'opus');
-    assert.equal(getArgumentAfter(args, '--audio-channels'), '2');
+    assert.ok(!args.includes('--audio-channels'), 'не должно быть несуществующей опции yt-dlp');
     assert.equal(getArgumentAfter(args, '--match-filter'), 'duration < 60');
     assert.equal(args[args.length - 2], '--');
     assert.equal(args[args.length - 1], SAMPLE_URL);
