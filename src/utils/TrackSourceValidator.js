@@ -1,5 +1,6 @@
 const config = require('../config');
 const { logError } = require('./logger');
+const PlatformSource = require('./PlatformSource');
 
 class TrackSourceValidator {
     static validate(url) {
@@ -52,14 +53,9 @@ class TrackSourceValidator {
 
     static classifySource(parsedUrl) {
         const hostname = parsedUrl.hostname.toLowerCase();
-        
-        if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
-            return 'platform';
-        }
-        if (hostname.includes('soundcloud.com')) {
-            return 'platform';
-        }
-        if (hostname.includes('twitch.tv')) {
+
+        // Строгий суффикс-матч: `evilyoutube.com` не должен считаться платформой.
+        if (PlatformSource.isPlatformHost(hostname)) {
             return 'platform';
         }
         

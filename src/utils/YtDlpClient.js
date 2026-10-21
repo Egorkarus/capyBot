@@ -1,157 +1,372 @@
 const { spawn } = require('child_process');
+const { once } = require('events');
 const fs = require('fs');
+const fsPromises = require('fs/promises');
+const path = require('path');
 const config = require('../config');
-const { logError, logInfo } = require('./logger');
+const { logError, logWarn } = require('./logger');
+
+// Предохранитель на ожидание 'close' перед удалением частичных файлов:
+// на Windows дескриптор может освобождаться с задержкой.
+const CLEANUP_CLOSE_TIMEOUT_MS = 3000;
+
+// Путь к cookies.txt и его наличие вычисляем один раз при загрузке модуля:
+// раньше на каждый вызов yt-dlp выполнялось отдельное fs.access.
+const COOKIES_PATH = path.join(__dirname, '..', '..', 'cookies.txt');
+const USE_COOKIES = fs.existsSync(COOKIES_PATH);
+
+const INFO_PRINT_TEMPLATE = '%(title)s\t%(duration)s\t%(is_live)s\t%(live_status)s';
 
 function buildYtDlpArgs(baseArgs, url) {
     return [...baseArgs, '--js-runtimes', `node:${process.execPath}`, '--', url];
 }
 
-function spawnYtDlp(baseArgs, url) {
-    return spawn('yt-dlp', buildYtDlpArgs(baseArgs, url));
+function createAbortError() {
+    const error = new Error('yt-dlp process aborted');
+    error.code = 'ABORTED';
+    return error;
+}
+
+function killProcessTree(child) {
+    if (!child || child.exitCode !== null) return;
+
+    if (process.platform === 'win32' && child.pid) {
+        const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        killer.on('error', error => logError('Failed to kill yt-dlp process tree', error));
+        return;
+    }
+
+    child.kill('SIGTERM');
+}
+
+function getCookiesPath() {
+    return USE_COOKIES ? COOKIES_PATH : null;
+}
+
+/**
+ * Удаляет файл, повторяя попытку при EPERM/EBUSY (Windows держит дескриптор
+ * ещё некоторое время после завершения процесса). Не бросает исключений.
+ */
+async function removeFileWithRetries(filePath) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            await fsPromises.rm(filePath, { force: true });
+            return;
+        } catch (error) {
+            const isBusy = error.code === 'EPERM' || error.code === 'EBUSY';
+            if (!isBusy || attempt === 3) {
+                logWarn(`Failed to remove temp file ${filePath}`, error);
+                return;
+            }
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    }
+}
+
+/**
+ * Разбирает вывод `yt-dlp --print` с шаблоном INFO_PRINT_TEMPLATE.
+ * @param {string} text
+ * @returns {{title: string|null, durationMs: number|null, isLive: boolean}|null}
+ *   null, если вывода нет или он не соответствует шаблону (вызывающий подставляет URL).
+ */
+function parseInfoOutput(text) {
+    if (!text || typeof text !== 'string') return null;
+
+    const line = text.split(/\r?\n/).find(entry => entry.trim().length > 0);
+    if (!line) return null;
+
+    // Название трека может содержать табуляцию, поэтому разбираем строку с конца:
+    // последние три поля шаблона (duration, is_live, live_status) всегда справа.
+    const parts = line.split('\t');
+    if (parts.length < 3) return null;
+
+    const rawLiveStatus = parts.pop();
+    const rawIsLive = parts.pop();
+    const rawDuration = parts.pop();
+    const rawTitle = parts.join('\t');
+    const title = rawTitle && rawTitle.trim() !== '' && rawTitle !== 'NA' ? rawTitle.trim() : null;
+
+    const durationValue = rawDuration.trim();
+    const durationSeconds = durationValue === '' || durationValue === 'NA' ? null : Number(durationValue);
+    const durationMs = durationSeconds != null && Number.isFinite(durationSeconds)
+        ? Math.round(durationSeconds * 1000)
+        : null;
+
+    const isLive = rawLiveStatus.trim() === 'is_live'
+        || ['true', '1', 'yes'].includes(rawIsLive.trim().toLowerCase());
+
+    return { title, durationMs, isLive };
+}
+
+/**
+ * Классифицирует неуспешное завершение yt-dlp.
+ * Код 101 больше не считается признаком превышения длительности: его может вернуть
+ * любая ошибка, поэтому смотрим только на текст фильтра.
+ */
+function classifyDownloadFailure(code, stderr) {
+    if (!code) return null;
+    const errorText = String(stderr || '');
+    if (errorText.includes('does not pass filter')) return 'TOO_LONG';
+    return null;
 }
 
 class YtDlpClient {
-    static createStreamJob(url) {
+    static buildInfoArgs(url, options = {}) {
+        const args = ['--no-playlist', '--no-warnings', '--print', INFO_PRINT_TEMPLATE];
+        if (options.cookiesPath) args.push('--cookies', options.cookiesPath);
+        return buildYtDlpArgs(args, url);
+    }
+
+    static buildDownloadArgs(url, options = {}) {
+        const outputPathPattern = options.outputPathPattern || '%(title)s.%(ext)s';
+        const args = [
+            '-f', 'bestaudio/best',
+            '-x',
+            '--audio-format', 'mp3',
+            '--no-video',
+            '--no-playlist',
+            '-o', outputPathPattern
+        ];
+
+        if (options.maxDurationMs != null) {
+            args.push('--match-filter', `duration < ${Math.ceil(options.maxDurationMs / 1000)}`);
+        }
+        if (options.cookiesPath) args.push('--cookies', options.cookiesPath);
+
+        return buildYtDlpArgs(args, url);
+    }
+
+    static createStreamJob(url, options = {}) {
+        const { signal } = options;
+
+        if (signal && signal.aborted) {
+            return Promise.reject(createAbortError());
+        }
+
         return new Promise((resolve, reject) => {
-            fs.access('cookies.txt', fs.constants.F_OK, (err) => {
-                const args = ['-f', 'bestaudio/best', '--no-playlist', '-o', '-'];
-                if (!err) args.push('--cookies', 'cookies.txt');
+            const args = ['-f', 'bestaudio/best', '--no-playlist', '-o', '-'];
+            if (USE_COOKIES) args.push('--cookies', COOKIES_PATH);
 
-                const ytDlp = spawnYtDlp(args, url);
-                let stderrData = '';
-                let isResolved = false;
-                
-                const timeout = setTimeout(() => {
-                    if (!isResolved) {
-                        isResolved = true;
-                        ytDlp.kill('SIGTERM');
-                        reject(new Error(`yt-dlp stream timeout (${config.timeouts.ytDlpTimeoutMs}ms)`));
-                    }
-                }, config.timeouts.ytDlpTimeoutMs);
+            const ytDlp = spawn('yt-dlp', buildYtDlpArgs(args, url));
+            let stderrData = '';
+            let isSettled = false;
+            let timeout = null;
 
-                ytDlp.stderr.on('data', (data) => {
-                    const line = data.toString();
-                    stderrData += line;
-                    
-                    if (stderrData.length > 50000) {
-                        stderrData = stderrData.slice(-50000);
-                    }
-                    
-                    if (line.includes('ERROR:')) {
-                        logError(`yt-dlp error: ${line}`);
-                    }
-                });
+            const onAbort = () => {
+                if (isSettled) return;
+                killProcessTree(ytDlp);
+                if (ytDlp.stdout) ytDlp.stdout.destroy();
+                settle(reject, createAbortError());
+            };
 
-                ytDlp.on('error', (error) => {
-                    if (!isResolved) {
-                        isResolved = true;
-                        clearTimeout(timeout);
-                        reject(error);
-                    }
-                });
+            const settle = (handler, value) => {
+                if (isSettled) return;
+                isSettled = true;
+                clearTimeout(timeout);
+                if (signal) signal.removeEventListener('abort', onAbort);
+                handler(value);
+            };
 
-                ytDlp.on('spawn', () => {
-                    if (!isResolved) {
-                        isResolved = true;
-                        clearTimeout(timeout);
-                        
-                        const job = {
-                            stream: ytDlp.stdout,
-                            process: ytDlp,
-                            stop: async () => {
-                                if (!ytDlp.killed) {
-                                    ytDlp.kill('SIGTERM');
-                                    
-                                    await new Promise((res) => {
-                                        const killTimeout = setTimeout(() => {
-                                            if (!ytDlp.killed) {
-                                                ytDlp.kill('SIGKILL');
-                                            }
-                                            res();
-                                        }, 3000);
-                                        
-                                        ytDlp.once('exit', () => {
-                                            clearTimeout(killTimeout);
-                                            res();
-                                        });
-                                    });
-                                }
-                            },
-                            completed: new Promise((res) => {
-                                ytDlp.once('exit', (code) => {
-                                    res({ code, stderr: stderrData });
-                                });
-                            })
-                        };
-                        
-                        resolve(job);
-                    }
-                });
+            if (signal) signal.addEventListener('abort', onAbort, { once: true });
+
+            timeout = setTimeout(() => {
+                killProcessTree(ytDlp);
+                settle(reject, new Error(`yt-dlp stream timeout (${config.timeouts.ytDlpTimeoutMs}ms)`));
+            }, config.timeouts.ytDlpTimeoutMs);
+
+            ytDlp.stderr.on('data', (data) => {
+                const line = data.toString();
+                stderrData += line;
+
+                if (stderrData.length > 50000) {
+                    stderrData = stderrData.slice(-50000);
+                }
+
+                if (line.includes('ERROR:')) {
+                    logError(`yt-dlp error: ${line.trim()}`);
+                }
+            });
+
+            ytDlp.on('error', (error) => {
+                settle(reject, error);
+            });
+
+            ytDlp.on('spawn', () => {
+                if (isSettled) {
+                    killProcessTree(ytDlp);
+                    return;
+                }
+
+                clearTimeout(timeout);
+
+                const job = {
+                    stream: ytDlp.stdout,
+                    process: ytDlp,
+                    stop: async () => {
+                        if (ytDlp.exitCode !== null) return;
+                        killProcessTree(ytDlp);
+
+                        await Promise.race([
+                            job.completed,
+                            new Promise(res => setTimeout(res, 3000))
+                        ]);
+                    },
+                    completed: new Promise((res) => {
+                        ytDlp.once('exit', (code) => {
+                            res({ code, stderr: stderrData });
+                        });
+                    })
+                };
+
+                settle(resolve, job);
             });
         });
     }
 
-    static downloadFile(url, outputPathPattern, maxDurationMs = null) {
-        return new Promise((resolve, reject) => {
-            const args = [
-                '-f', 'bestaudio/best',
-                '-x',
-                '--audio-format', 'mp3',
-                '--no-video',
-                '--no-playlist',
-                '--no-progress',
-                '-o', outputPathPattern
-            ];
+    static downloadFile(url, outputPathPattern, maxDurationMs = null, options = {}) {
+        const { signal } = options;
 
-            if (maxDurationMs != null) {
-                args.push('--match-filter', `duration < ${Math.ceil(maxDurationMs / 1000)}`);
+        if (signal && signal.aborted) {
+            return Promise.reject(createAbortError());
+        }
+
+        const outputDir = path.dirname(outputPathPattern);
+        const filePrefix = path.basename(outputPathPattern).split('.%(')[0];
+
+        const cleanupPartialFiles = async () => {
+            try {
+                const entries = await fsPromises.readdir(outputDir);
+                const partialFiles = entries.filter(name => name.startsWith(filePrefix));
+                await Promise.all(partialFiles.map(name =>
+                    removeFileWithRetries(path.join(outputDir, name))
+                ));
+            } catch (error) {
+                logError('Failed to cleanup partial yt-dlp files', error);
             }
+        };
 
-            fs.access('cookies.txt', fs.constants.F_OK, (err) => {
-                if (!err) args.push('--cookies', 'cookies.txt');
+        return new Promise((resolve, reject) => {
+            const args = YtDlpClient.buildDownloadArgs(url, {
+                outputPathPattern,
+                maxDurationMs,
+                cookiesPath: getCookiesPath()
+            });
 
-                const ytDlp = spawnYtDlp(args, url);
-                let errorData = '';
-                let isCompleted = false;
-                
-                const timeout = setTimeout(() => {
-                    if (!isCompleted) {
-                        isCompleted = true;
-                        ytDlp.kill('SIGTERM');
-                        reject(new Error(`yt-dlp download timeout (${config.timeouts.ytDlpTimeoutMs}ms)`));
-                    }
+            const ytDlp = spawn('yt-dlp', args);
+            let stderrData = '';
+            let lastStderrLine = '';
+            let isSettled = false;
+            let isStopping = false;
+            let abortRequested = false;
+            let inactivityTimer = null;
+            let hardTimer = null;
+
+            // На Windows удаление упадёт, пока процесс держит дескриптор,
+            // поэтому перед чисткой ждём 'close' с предохранителем по времени.
+            const processClosed = once(ytDlp, 'close').then(() => {}, () => {});
+
+            const waitForProcessClose = async () => {
+                if (ytDlp.exitCode !== null || ytDlp.signalCode !== null) return;
+
+                let guardTimer = null;
+                const guard = new Promise(resolveGuard => {
+                    guardTimer = setTimeout(resolveGuard, CLEANUP_CLOSE_TIMEOUT_MS);
+                });
+
+                await Promise.race([processClosed, guard]);
+                clearTimeout(guardTimer);
+            };
+
+            const clearTimers = () => {
+                clearTimeout(inactivityTimer);
+                clearTimeout(hardTimer);
+            };
+
+            const settle = (handler, value) => {
+                if (isSettled) return;
+                isSettled = true;
+                clearTimers();
+                if (signal) signal.removeEventListener('abort', onAbort);
+                handler(value);
+            };
+
+            // Таймауты и abort: сначала гасим процесс, дожидаемся закрытия
+            // и только потом удаляем частичные файлы, о которых GuildSession не знает.
+            const stopWithError = async (error) => {
+                if (isSettled || isStopping) return;
+                isStopping = true;
+                abortRequested = true;
+                killProcessTree(ytDlp);
+                await waitForProcessClose();
+                await cleanupPartialFiles();
+                settle(reject, error);
+            };
+
+            const onAbort = () => {
+                stopWithError(createAbortError())
+                    .catch(cleanupError => logError('Failed to abort yt-dlp download', cleanupError));
+            };
+
+            const resetInactivityTimer = () => {
+                clearTimeout(inactivityTimer);
+                inactivityTimer = setTimeout(() => {
+                    const phaseHint = lastStderrLine
+                        ? `, последняя строка вывода: ${lastStderrLine.length > 200 ? `${lastStderrLine.slice(0, 197)}...` : lastStderrLine}`
+                        : '';
+                    stopWithError(new Error(
+                        `yt-dlp download timeout (${config.timeouts.ytDlpTimeoutMs}ms без активности${phaseHint})`
+                    )).catch(error => logError('Failed to stop yt-dlp download on timeout', error));
                 }, config.timeouts.ytDlpTimeoutMs);
+            };
 
-                ytDlp.stderr.on('data', (chunk) => {
-                    errorData += chunk.toString();
-                    if (errorData.length > 10000) {
-                        errorData = errorData.slice(-10000);
-                    }
-                });
+            if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
-                ytDlp.on('error', (error) => {
-                    if (!isCompleted) {
-                        isCompleted = true;
-                        clearTimeout(timeout);
-                        reject(error);
-                    }
-                });
+            resetInactivityTimer();
+            hardTimer = setTimeout(() => {
+                stopWithError(new Error(`yt-dlp download hard timeout (${config.timeouts.downloadHardTimeoutMs}ms)`))
+                    .catch(error => logError('Failed to stop yt-dlp download on hard timeout', error));
+            }, config.timeouts.downloadHardTimeoutMs);
 
-                ytDlp.on('close', (code) => {
-                    if (!isCompleted) {
-                        isCompleted = true;
-                        clearTimeout(timeout);
-                        // Для файлов, отсечённых фильтром длительности, yt-dlp выходит с кодом 101.
-                        if (code === 101) {
-                            reject(new Error('TOO_LONG'));
-                        } else if (code === 0) {
-                            resolve();
-                        } else {
-                            reject(new Error(`yt-dlp завершился с кодом ${code}. Ошибка: ${errorData.trim() || 'Unknown'}`));
-                        }
-                    }
-                });
+            // Активность — любые данные любого из потоков. Прогресс загрузки
+            // yt-dlp пишет в stdout, ошибки и фазы — в stderr.
+            ytDlp.stdout.on('data', () => resetInactivityTimer());
+
+            ytDlp.stderr.on('data', (chunk) => {
+                const text = chunk.toString();
+                stderrData += text;
+                if (stderrData.length > 10000) {
+                    stderrData = stderrData.slice(-10000);
+                }
+
+                const lines = text.split(/\r?\n/).filter(entry => entry.trim().length > 0);
+                if (lines.length > 0) lastStderrLine = lines[lines.length - 1].trim();
+
+                resetInactivityTimer();
+            });
+
+            ytDlp.on('error', (error) => {
+                if (abortRequested) return;
+                settle(reject, error);
+            });
+
+            ytDlp.on('close', async (code) => {
+                if (isSettled || abortRequested) return;
+
+                if (code === 0) {
+                    settle(resolve);
+                    return;
+                }
+
+                // Процесс уже закрылся, поэтому удаление безопасно и без ожидания.
+                await cleanupPartialFiles();
+                if (isSettled) return;
+
+                if (classifyDownloadFailure(code, stderrData) === 'TOO_LONG') {
+                    settle(reject, new Error('TOO_LONG'));
+                    return;
+                }
+
+                settle(reject, new Error(`yt-dlp завершился с кодом ${code}. Ошибка: ${stderrData.trim() || 'Unknown'}`));
             });
         });
     }
@@ -163,53 +378,58 @@ class YtDlpClient {
      *   При любой ошибке вернёт фолбэк с title = исходным URL, durationMs = null, isLive = false,
      *   чтобы поток не падал из-за недоступности метаданных.
      */
-    static async fetchInfo(url) {
+    static fetchInfo(url) {
         return new Promise((resolve) => {
-            fs.access('cookies.txt', fs.constants.F_OK, (err) => {
-                const args = ['--dump-single-json', '--no-playlist', '--no-warnings'];
-                if (!err) args.push('--cookies', 'cookies.txt');
+            const fallback = { title: url, durationMs: null, isLive: false };
+            const args = YtDlpClient.buildInfoArgs(url, { cookiesPath: getCookiesPath() });
 
-                const ytDlp = spawnYtDlp(args, url);
-                let jsonData = '';
-                const timeout = setTimeout(() => {
-                    ytDlp.kill('SIGTERM');
-                    resolve({ title: url, durationMs: null, isLive: false });
-                }, 15000);
+            const ytDlp = spawn('yt-dlp', args);
+            let stdoutData = '';
+            let isSettled = false;
+            let timeout = null;
 
-                ytDlp.stdout.on('data', (chunk) => {
-                    jsonData += chunk.toString();
-                    if (jsonData.length > 50000) {
-                        ytDlp.kill('SIGTERM');
-                    }
+            const settle = (result) => {
+                if (isSettled) return;
+                isSettled = true;
+                clearTimeout(timeout);
+                resolve(result);
+            };
+
+            timeout = setTimeout(() => {
+                killProcessTree(ytDlp);
+                settle(fallback);
+            }, config.timeouts.infoFetchTimeoutMs);
+
+            ytDlp.stdout.on('data', (chunk) => {
+                stdoutData += chunk.toString();
+            });
+
+            ytDlp.on('close', (code) => {
+                if (code !== 0) {
+                    settle(fallback);
+                    return;
+                }
+
+                const parsed = parseInfoOutput(stdoutData);
+                if (!parsed) {
+                    settle(fallback);
+                    return;
+                }
+
+                settle({
+                    title: parsed.title || url,
+                    durationMs: parsed.durationMs,
+                    isLive: parsed.isLive
                 });
+            });
 
-                ytDlp.on('close', (code) => {
-                    clearTimeout(timeout);
-                    if (code !== 0 || !jsonData.trim()) {
-                        resolve({ title: url, durationMs: null, isLive: false });
-                        return;
-                    }
-                    try {
-                        const info = JSON.parse(jsonData);
-                        const durationMs = (info.duration ?? null) != null ? Math.round(info.duration * 1000) : null;
-                        // is_live или был_in_данных; в yt-dlp это info.is_live
-                        resolve({
-                            title: info.title || url,
-                            durationMs,
-                            isLive: Boolean(info.live_status === 'is_live' || info.is_live)
-                        });
-                    } catch (err) {
-                        resolve({ title: url, durationMs: null, isLive: false });
-                    }
-                });
-
-                ytDlp.on('error', () => {
-                    clearTimeout(timeout);
-                    resolve({ title: url, durationMs: null, isLive: false });
-                });
+            ytDlp.on('error', () => {
+                settle(fallback);
             });
         });
     }
 }
 
 module.exports = YtDlpClient;
+module.exports.parseInfoOutput = parseInfoOutput;
+module.exports.classifyDownloadFailure = classifyDownloadFailure;

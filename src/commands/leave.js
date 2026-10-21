@@ -13,7 +13,10 @@ module.exports = {
         }
 
         await session.destroy();
-        client.deleteSession(message.guild.id);
+        // За время await сессию могли заменить (!join/!play) — чужую не удаляем.
+        if (client.getSession(message.guild.id) === session) {
+            client.deleteSession(message.guild.id);
+        }
         
         logInfo(`Left voice channel in guild ${message.guild.id}`);
         await message.reply(client.config.messages.leaveSuccess);

@@ -1,8 +1,10 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const fs = require('fs');
+const fsPromises = require('fs/promises');
 const path = require('path');
 const config = require('./config');
-const { logInfo, logError } = require('./utils/logger');
+const GuildSession = require('./structures/GuildSession');
+const { logInfo, logWarn, logError } = require('./utils/logger');
 
 class CapyClient extends Client {
     constructor() {
@@ -23,7 +25,8 @@ class CapyClient extends Client {
         const PlayRateLimiter = require('./utils/PlayRateLimiter');
         this.rateLimiter = new PlayRateLimiter();
         
-        setInterval(() => this.rateLimiter.cleanup(), 60000);
+        this.rateLimiterCleanupInterval = setInterval(() => this.rateLimiter.cleanup(), 60000);
+        this.rateLimiterCleanupInterval.unref();
     }
 
     async init() {
@@ -83,9 +86,6 @@ class CapyClient extends Client {
     }
 
     createSession(guildId, voiceChannelId, textChannelId) {
-        const guildSessionPath = path.join(__dirname, 'structures', 'GuildSession.js');
-        delete require.cache[require.resolve(guildSessionPath)];
-        const GuildSession = require(guildSessionPath);
         const session = new GuildSession(guildId, voiceChannelId, textChannelId);
         this.sessions.set(guildId, session);
         return session;
@@ -93,8 +93,12 @@ class CapyClient extends Client {
 
     deleteSession(guildId) {
         const session = this.sessions.get(guildId);
-        if (session) {
-            session.destroy();
+        // Команды (!leave/!stop) уже уничтожают сессию сами: повторный destroy()
+        // не нужен и только дублирует работу.
+        if (session && !session.destroyed) {
+            session.destroy().catch(error => {
+                logError(`Failed to destroy session for guild ${guildId}`, error);
+            });
         }
         this.sessions.delete(guildId);
     }
@@ -102,12 +106,30 @@ class CapyClient extends Client {
     async cleanTempDirectory() {
         const tempPath = path.join(__dirname, '..', 'temp');
         try {
-            const fsPromises = require('fs/promises');
             await fsPromises.rm(tempPath, { recursive: true, force: true });
+        } catch (error) {
+            logWarn("Failed to remove temp directory on start", error);
+        }
+
+        try {
             await fsPromises.mkdir(tempPath, { recursive: true });
         } catch (error) {
-            logError("Failed to clean up temp directory on start", error);
+            logError("Failed to create temp directory on start", error);
         }
+    }
+
+    async shutdown() {
+        if (this.rateLimiterCleanupInterval) {
+            clearInterval(this.rateLimiterCleanupInterval);
+            this.rateLimiterCleanupInterval = null;
+        }
+
+        const activeSessions = Array.from(this.sessions.values());
+        this.sessions.clear();
+        await Promise.allSettled(activeSessions.map(session => session.destroy()));
+
+        await this.cleanTempDirectory();
+        await this.destroy();
     }
 }
 

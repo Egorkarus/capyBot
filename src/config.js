@@ -1,3 +1,13 @@
+const DEFAULT_MAX_DOWNLOAD_BYTES = 70 * 1024 * 1024;
+
+function readInt(name, fallback) {
+    const parsedValue = Number(process.env[name]);
+    return Number.isFinite(parsedValue) && parsedValue > 0 ? Math.floor(parsedValue) : fallback;
+}
+
+const maxDownloadBytes = readInt('MAX_DOWNLOAD_BYTES', DEFAULT_MAX_DOWNLOAD_BYTES);
+const maxFileSizeBytes = readInt('MAX_FILE_SIZE_BYTES', maxDownloadBytes);
+
 module.exports = {
     bot: {
         prefix: '!',
@@ -8,8 +18,10 @@ module.exports = {
         reconnectMaxAttempts: 5,
         reconnectBaseDelay: 2000,
         kickCheckWindowMs: 30000,
-        httpDownloadTimeoutMs: 60000,
-        ytDlpTimeoutMs: 90000
+        httpDownloadTimeoutMs: readInt('HTTP_DOWNLOAD_TIMEOUT_MS', 60000),
+        ytDlpTimeoutMs: readInt('YT_DLP_TIMEOUT_MS', 90000),
+        infoFetchTimeoutMs: readInt('YT_DLP_INFO_TIMEOUT_MS', 15000),
+        downloadHardTimeoutMs: readInt('YT_DLP_DOWNLOAD_HARD_TIMEOUT_MS', 900000)
     },
     security: {
         allowedDomains: [
@@ -22,7 +34,7 @@ module.exports = {
             'ytimg.com'
         ],
         allowedFileExtensions: ['.mp3', '.mp4', '.wav', '.ogg', '.m4a', '.flac', '.webm'],
-        maxFileSizeBytes: 100 * 1024 * 1024,
+        maxFileSizeBytes,
         maxRedirects: 5,
         allowedMimeTypes: [
             'audio/mpeg',
@@ -37,16 +49,16 @@ module.exports = {
         ]
     },
     limits: {
-        maxTracksPerGuild: 50,
-        maxTracksPerUser: 10,
-        playRateLimitWindowMs: 60000,
-        maxPlayRequestsPerWindow: 5,
+        maxTracksPerGuild: readInt('MAX_TRACKS_PER_GUILD', 50),
+        maxTracksPerUser: readInt('MAX_TRACKS_PER_USER', 10),
+        playRateLimitWindowMs: readInt('PLAY_RATE_LIMIT_WINDOW_MS', 60000),
+        maxPlayRequestsPerWindow: readInt('MAX_PLAY_REQUESTS_PER_WINDOW', 5),
         // Максимальная длительность скачиваемого трека (секунд).
         // Защита от "10-гигабайтных" лекций/радио-потоков: 30 мин = 1800 сек.
-        maxTrackDurationSeconds: 1800,
+        maxTrackDurationSeconds: readInt('MAX_TRACK_DURATION_SECONDS', 1800),
         // Оценка максимального размера файла на диске. Для 30-мин mp3 с битрейтом
         // 192kbps = ~43 МБ. Резерв берём на аномальные битрейты.
-        maxDownloadBytes: 70 * 1024 * 1024
+        maxDownloadBytes
     },
     messages: {
         noPermission: "Ты кто такой? Только вожаки стаи могут мной командовать. 🍊",
@@ -68,7 +80,6 @@ module.exports = {
         skipSuccess: "Скипнул трек. Несите следующий, этот мне надоел. 🍊⏭️",
         stopSuccess: "Полная остановка! Очередь очищена, бот отдыхает. 👑🍊🛑",
         playInvalidUrl: "Ты мне что подсовываешь? Давай ссылку на YouTube, SoundCloud, Twitch, MP3/MP4 файл (по ссылке или во вложении). 🍊",
-        playConnectionFailed: "Не могу установить надежную связь с голосовым сервером Discord. Возможно, закрыты UDP-порты на сервере. 🍊🔌",
         playFetching: "Получаю информацию о треке... 🍊⏳",
         playNowPlaying: "Врубаю: **{title}** 🍊🎶",
         playQueued: "Добавил в очередь: **{title}** 🍊",

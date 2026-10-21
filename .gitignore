@@ -11,3 +11,7 @@ deploy/
 .graphify/
 src/.graphify/
 .serena/
+.opencode/index/
+.opencode/vectors/
+.opencode/inverted-index.json
+.opencode/

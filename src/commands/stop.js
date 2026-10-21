@@ -10,7 +10,10 @@ module.exports = {
         }
 
         await session.stop();
-        client.deleteSession(message.guild.id);
+        // За время await сессию могли заменить (!join/!play) — чужую не удаляем.
+        if (client.getSession(message.guild.id) === session) {
+            client.deleteSession(message.guild.id);
+        }
         await message.reply(client.config.messages.stopSuccess);
     }
 };

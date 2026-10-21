@@ -1,23 +1,24 @@
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /usr/src/app
 
-ARG YT_DLP_VERSION=2024.08.06
+ARG YT_DLP_VERSION=2026.08.19
 
 RUN apk add --no-cache \
     python3 \
     make \
     g++ \
     curl \
-    && curl -L "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/yt-dlp" -o /usr/local/bin/yt-dlp \
+    && curl -fL "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/yt-dlp" -o /usr/local/bin/yt-dlp \
     && echo "Verifying yt-dlp version ${YT_DLP_VERSION}" \
-    && chmod a+rx /usr/local/bin/yt-dlp
+    && chmod a+rx /usr/local/bin/yt-dlp \
+    && /usr/local/bin/yt-dlp --version
 
 COPY package*.json ./
 
 RUN npm ci --omit=dev
 
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /usr/src/app
 
