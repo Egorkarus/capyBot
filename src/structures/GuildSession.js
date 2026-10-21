@@ -491,15 +491,27 @@ class GuildSession {
             return false;
         }
 
-        if (this.connection.state.status === VoiceConnectionStatus.Ready) return true;
-
-        try {
-            await entersState(this.connection, VoiceConnectionStatus.Ready, 3000);
-            return true;
-        } catch (error) {
-            logError('Voice connection is not ready', error);
-            return false;
+        if (this.connection.state.status !== VoiceConnectionStatus.Ready) {
+            try {
+                await entersState(this.connection, VoiceConnectionStatus.Ready, 3000);
+            } catch (error) {
+                logError('Voice connection is not ready', error);
+                return false;
+            }
         }
+
+        // stop() больше не отписывает плеер от соединения. Если подписку потеряли
+        // другим путём, восстанавливаем её, иначе звук не пойдёт.
+        if (!this.subscription) {
+            try {
+                this.subscription = this.connection.subscribe(this.player);
+            } catch (error) {
+                logError('Failed to restore player subscription', error);
+                return false;
+            }
+        }
+
+        return true;
     }
 
     addTrack(url, title, textChannel = null, userId = null, meta = {}) {
@@ -554,16 +566,7 @@ class GuildSession {
             }
             this.currentStreamJob = null;
         }
-        
-        if (this.subscription) {
-            try {
-                this.subscription.unsubscribe();
-            } catch (error) {
-                logWarn('Failed to unsubscribe on stop', error);
-            }
-            this.subscription = null;
-        }
-        
+
         await this.cleanupCurrentFile();
     }
 

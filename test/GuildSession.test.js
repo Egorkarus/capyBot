@@ -4,7 +4,7 @@ const fsPromises = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { PassThrough } = require('node:stream');
-const { AudioPlayerStatus } = require('@discordjs/voice');
+const { AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
 
 const config = require('../src/config');
 const GuildSession = require('../src/structures/GuildSession');
@@ -711,4 +711,55 @@ test('setConnection не бросает, если логгер не экспор
     assert.equal(accepted, true);
     assert.equal(session.connection, connection);
     assert.equal(typeof session.subscription.unsubscribe, 'function');
+});
+
+test('stop очищает очередь, но не уничтожает соединение и не убивает сессию', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+
+    let destroyCalls = 0;
+    session.connection = {
+        destroy() {
+            destroyCalls += 1;
+        }
+    };
+    session.tracks.push({ url: 'https://example.com/a.mp3', title: 'track' });
+
+    await session.stop();
+
+    assert.equal(destroyCalls, 0);
+    assert.equal(session.destroyed, false);
+    assert.equal(session.tracks.length, 0);
+});
+
+test('stop не отписывает плеер от соединения', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+
+    let unsubscribeCalls = 0;
+    const subscription = {
+        unsubscribe() {
+            unsubscribeCalls += 1;
+        }
+    };
+    session.subscription = subscription;
+
+    await session.stop();
+
+    assert.equal(unsubscribeCalls, 0);
+    assert.notEqual(session.subscription, null);
+    assert.equal(session.subscription, subscription);
+});
+
+test('_ensureConnectionReady восстанавливает потерянную подписку плеера', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+
+    session.connection = {
+        state: { status: VoiceConnectionStatus.Ready },
+        subscribe: () => ({ unsubscribe() {} })
+    };
+    session.subscription = null;
+
+    const ready = await session._ensureConnectionReady();
+
+    assert.equal(ready, true);
+    assert.notEqual(session.subscription, null);
 });
