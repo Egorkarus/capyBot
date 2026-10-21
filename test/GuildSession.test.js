@@ -10,6 +10,7 @@ const config = require('../src/config');
 const GuildSession = require('../src/structures/GuildSession');
 const SafeHttpClient = require('../src/utils/SafeHttpClient');
 const YtDlpClient = require('../src/utils/YtDlpClient');
+const AudioResourceFactory = require('../src/utils/AudioResourceFactory');
 
 function createSession(t) {
     const session = new GuildSession('guild-1', 'voice-1', 'text-1');
@@ -788,4 +789,56 @@ test('cleanupCurrentFile уничтожает поток ресурса и уд�
     assert.equal(playStream.destroyed, true);
     assert.equal(session.currentResource, null);
     await assert.rejects(fsPromises.stat(filePath), { code: 'ENOENT' });
+});
+
+test('отмена во время создания ресурса не запускает воспроизведение и удаляет файл', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+
+    let playCalls = 0;
+    session.player.play = () => {
+        playCalls += 1;
+        return true;
+    };
+    session._ensureConnectionReady = async () => true;
+
+    let downloadedPath = null;
+    const originalDownload = SafeHttpClient.download;
+    SafeHttpClient.download = async (url, targetPath) => {
+        downloadedPath = targetPath;
+        await fsPromises.mkdir(path.dirname(targetPath), { recursive: true });
+        await fsPromises.writeFile(targetPath, Buffer.from('audio-bytes'));
+    };
+
+    const originalCreateFileResource = AudioResourceFactory.createFileResource;
+    const createdStreams = [];
+    AudioResourceFactory.createFileResource = async () => {
+        // skip/stop пришёл, пока читали заголовок файла (окно await).
+        session.downloadController?.abort?.();
+        const playStream = {
+            destroyed: false,
+            destroy() {
+                this.destroyed = true;
+            },
+            read() {}
+        };
+        createdStreams.push(playStream);
+        return { playStream };
+    };
+    t.after(() => {
+        SafeHttpClient.download = originalDownload;
+        AudioResourceFactory.createFileResource = originalCreateFileResource;
+    });
+
+    const track = { url: 'https://example.com/a.mp3', title: 'track', isLive: false, trackDurationMs: null };
+    session.tracks.push(track);
+
+    const started = await session._playNextTrackInternal();
+
+    assert.equal(started, false);
+    assert.equal(playCalls, 0);
+    assert.equal(createdStreams.length, 1);
+    assert.equal(createdStreams[0].destroyed, true);
+    assert.equal(session.currentFilePath, null);
+    assert.ok(downloadedPath);
+    await assert.rejects(fsPromises.access(downloadedPath), { code: 'ENOENT' });
 });
