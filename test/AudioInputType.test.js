@@ -4,7 +4,7 @@ const fsPromises = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
-const { isOpusContainer, readOpusChannels } = require('../src/utils/AudioInputType');
+const { readOpusChannels } = require('../src/utils/AudioInputType');
 
 const OPUS_HEAD_BYTES = Buffer.from('OpusHead');
 
@@ -17,28 +17,11 @@ async function withTempFile(t, fileName, contents) {
     return filePath;
 }
 
-test('isOpusContainer распознаёт opus/ogg в любом регистре', () => {
-    assert.equal(isOpusContainer('temp/a.opus'), true);
-    assert.equal(isOpusContainer('temp/a.ogg'), true);
-    assert.equal(isOpusContainer('temp/A.OPUS'), true);
-});
-
-test('isOpusContainer отвергает другие контейнеры', () => {
-    assert.equal(isOpusContainer('temp/a.mp3'), false);
-    assert.equal(isOpusContainer('temp/a.m4a'), false);
-    assert.equal(isOpusContainer('temp/a.webm'), false);
-});
-
-test('isOpusContainer безопасен для пустого пути', () => {
-    assert.equal(isOpusContainer(null), false);
-    assert.equal(isOpusContainer(''), false);
-});
-
 test('readOpusChannels читает stereo из заголовка OpusHead', async (t) => {
     const filePath = await withTempFile(
         t,
         'stereo.opus',
-        Buffer.concat([Buffer.from('OggS....'), OPUS_HEAD_BYTES, Buffer.from([1, 2])])
+        Buffer.concat([Buffer.from([0, 0, 0, 0]), Buffer.from('OggS'), OPUS_HEAD_BYTES, Buffer.from([1, 2])])
     );
 
     assert.equal(await readOpusChannels(filePath), 2);
@@ -48,10 +31,26 @@ test('readOpusChannels читает mono из заголовка OpusHead', asyn
     const filePath = await withTempFile(
         t,
         'mono.opus',
-        Buffer.concat([Buffer.from('OggS....'), OPUS_HEAD_BYTES, Buffer.from([1, 1])])
+        Buffer.concat([Buffer.from([0, 0, 0, 0]), Buffer.from('OggS'), OPUS_HEAD_BYTES, Buffer.from([1, 1])])
     );
 
     assert.equal(await readOpusChannels(filePath), 1);
+});
+
+test('readOpusChannels игнорирует OpusHead без Ogg-страницы перед ним', async (t) => {
+    const filePath = await withTempFile(t, 'fake-opus.ogg', Buffer.from('xxxxOpusHead'));
+
+    assert.equal(await readOpusChannels(filePath), null);
+});
+
+test('readOpusChannels возвращает null, если channel count за концом окна чтения', async (t) => {
+    const filePath = await withTempFile(
+        t,
+        'truncated.opus',
+        Buffer.concat([Buffer.from('OggS'), OPUS_HEAD_BYTES])
+    );
+
+    assert.equal(await readOpusChannels(filePath), null);
 });
 
 test('readOpusChannels возвращает null без сигнатуры OpusHead', async (t) => {

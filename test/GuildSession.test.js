@@ -763,3 +763,29 @@ test('_ensureConnectionReady восстанавливает потерянную
     assert.equal(ready, true);
     assert.notEqual(session.subscription, null);
 });
+
+test('cleanupCurrentFile уничтожает поток ресурса и удаляет файл', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+
+    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'capybot-test-cleanup-'));
+    const filePath = path.join(tempDir, 'track.opus');
+    await fsPromises.writeFile(filePath, 'audio-bytes');
+
+    t.after(() => fsPromises.rm(tempDir, { recursive: true, force: true }));
+
+    session.currentFilePath = filePath;
+    const playStream = {
+        destroyed: false,
+        destroy() {
+            this.destroyed = true;
+        },
+        read() {}
+    };
+    session.currentResource = { playStream };
+
+    await session.cleanupCurrentFile();
+
+    assert.equal(playStream.destroyed, true);
+    assert.equal(session.currentResource, null);
+    await assert.rejects(fsPromises.stat(filePath), { code: 'ENOENT' });
+});

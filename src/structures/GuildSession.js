@@ -1,6 +1,5 @@
 const { joinVoiceChannel, entersState, VoiceConnectionStatus, createAudioPlayer, createAudioResource, AudioPlayerStatus, NoSubscriberBehavior, StreamType } = require('@discordjs/voice');
 const { AuditLogEvent } = require('discord.js');
-const fs = require('fs');
 const fsPromises = require('fs/promises');
 const config = require('../config');
 const logger = require('../utils/logger');
@@ -11,7 +10,7 @@ const logDebug = typeof logger.logDebug === 'function' ? logger.logDebug : () =>
 const SafeHttpClient = require('../utils/SafeHttpClient');
 const YtDlpClient = require('../utils/YtDlpClient');
 const PlatformSource = require('../utils/PlatformSource');
-const { isOpusContainer, readOpusChannels } = require('../utils/AudioInputType');
+const AudioResourceFactory = require('../utils/AudioResourceFactory');
 
 // Резервные значения лимитов на случай, если config.limits не загрузился
 // (защита от TypeError при частично устаревшем конфиге в контейнере).
@@ -166,7 +165,8 @@ class GuildSession {
         // Активный ресурс держит файл открытым: на Windows rm упадёт с EPERM/EBUSY.
         if (this.currentResource) {
             try {
-                this.currentResource.readStream?.destroy?.();
+                this.currentResource.playStream?.destroy?.();
+                this.currentResource.playStream?.read?.();
             } catch (error) {
                 logWarn('Failed to destroy current audio resource stream', error);
             }
@@ -396,8 +396,21 @@ class GuildSession {
             }
 
             this.currentFilePath = tempFilePath;
-            // opus stereo отдаём потоком без ffmpeg, остальное — прежним путём через ffmpeg.
-            const resource = await this._createFileResource(tempFilePath);
+            const resource = await AudioResourceFactory.createFileResource(tempFilePath);
+
+            // Пока читали заголовок файла, трек могли скипнуть или остановить:
+            // ресурс уже некому играть, а файл cleanupCurrentFile мог удалить.
+            if (this.destroyed || downloadSignal.aborted) {
+                try {
+                    resource.playStream?.destroy?.();
+                } catch (error) {
+                    logWarn('Failed to destroy unused audio resource stream', error);
+                }
+                await fsPromises.rm(tempFilePath, { force: true }).catch(() => {});
+                this.currentFilePath = null;
+                return false;
+            }
+
             this.currentResource = resource;
             this.player.play(resource);
             this._clearPendingTimers();
@@ -481,22 +494,6 @@ class GuildSession {
             this.connectionRetryCount += 1;
             this._scheduleNextAfterCurrent();
         }
-    }
-
-    async _createFileResource(filePath) {
-        // Discord-пайплайн OggOpus рассчитан на stereo 48k: играем без ffmpeg
-        // только когда контейнер ogg/opus и в заголовке ровно 2 канала.
-        // Моно и прочие форматы уходят в ffmpeg-fallback (создание ресурса по пути).
-        if (isOpusContainer(filePath)) {
-            const channels = await readOpusChannels(filePath);
-            if (channels === 2) {
-                const stream = fs.createReadStream(filePath);
-                stream.on('error', error => logError(`Audio file stream failed: ${filePath}`, error));
-                return createAudioResource(stream, { inputType: StreamType.OggOpus });
-            }
-        }
-
-        return createAudioResource(filePath);
     }
 
     async _ensureConnectionReady() {
