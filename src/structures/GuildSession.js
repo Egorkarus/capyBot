@@ -10,6 +10,7 @@ const logDebug = typeof logger.logDebug === 'function' ? logger.logDebug : () =>
 const SafeHttpClient = require('../utils/SafeHttpClient');
 const YtDlpClient = require('../utils/YtDlpClient');
 const PlatformSource = require('../utils/PlatformSource');
+const { resolvePlaybackOptions } = require('../utils/AudioInputType');
 
 // Резервные значения лимитов на случай, если config.limits не загрузился
 // (защита от TypeError при частично устаревшем конфиге в контейнере).
@@ -394,8 +395,8 @@ class GuildSession {
             }
 
             this.currentFilePath = tempFilePath;
-            // mp3/opus с диска транскодируются Discord'ом автоматически (встроенный ffmpeg).
-            const resource = createAudioResource(tempFilePath);
+            // opus/ogg отдаём напрямую (без ffmpeg), остальные форматы — через встроенный ffmpeg.
+            const resource = createAudioResource(tempFilePath, resolvePlaybackOptions(tempFilePath));
             this.currentResource = resource;
             this.player.play(resource);
             this._clearPendingTimers();
