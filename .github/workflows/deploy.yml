@@ -20,7 +20,8 @@ jobs:
           port: ${{ secrets.PORT || 22 }}
           script: |
             cd /var/www/blackiron.ru/bot || exit 1
-            git pull origin ${{ github.ref_name }}
+            git fetch --prune origin ${{ github.ref_name }}
+            git reset --hard origin/${{ github.ref_name }}
             if [ $(docker ps -q -f name=capybot) ]; then
               echo "Containers are running. Sending SIGUSR2 for Zero-Downtime Hot Reload..."
               docker exec capybot kill -SIGUSR2 1 || docker-compose up -d --build

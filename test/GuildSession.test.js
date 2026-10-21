@@ -668,3 +668,47 @@ test('_playNextTrackInternal не запускает плеер, если заг
     assert.equal(playCalls, 0);
     assert.deepEqual(await fsPromises.readdir(tempDirectory), []);
 });
+
+test('setConnection не бросает, если логгер не экспортирует logDebug', { timeout: 5000 }, async t => {
+    const logger = require('../src/utils/logger');
+    const originalLogDebug = logger.logDebug;
+
+    // На сервере при рассинхроне файлов logger.js старее GuildSession.js:
+    // logDebug отсутствует, а stateChange-обработчик его вызывает.
+    delete logger.logDebug;
+
+    t.after(() => {
+        logger.logDebug = originalLogDebug;
+        delete require.cache[GUILD_SESSION_MODULE_PATH];
+        require(GUILD_SESSION_MODULE_PATH);
+    });
+
+    delete require.cache[GUILD_SESSION_MODULE_PATH];
+    const StaleLoggerGuildSession = require(GUILD_SESSION_MODULE_PATH);
+    assert.equal(StaleLoggerGuildSession, require(GUILD_SESSION_MODULE_PATH));
+
+    const session = new StaleLoggerGuildSession('guild-stale-logger', 'voice-stale-logger', 'text-stale-logger');
+    t.after(async () => {
+        await session.destroy();
+    });
+
+    const handlers = new Map();
+    const connection = {
+        on(event, handler) {
+            handlers.set(event, handler);
+            return connection;
+        },
+        subscribe() {
+            // Прод-сценарий: stateChange эмитится синхронно внутри subscribe.
+            handlers.get('stateChange')?.({ status: 'connecting' }, { status: 'ready' });
+            return { unsubscribe() {} };
+        },
+        destroy() {}
+    };
+
+    const accepted = session.setConnection(connection, null);
+
+    assert.equal(accepted, true);
+    assert.equal(session.connection, connection);
+    assert.equal(typeof session.subscription.unsubscribe, 'function');
+});

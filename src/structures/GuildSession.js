@@ -2,7 +2,11 @@ const { joinVoiceChannel, entersState, VoiceConnectionStatus, createAudioPlayer,
 const { AuditLogEvent } = require('discord.js');
 const fsPromises = require('fs/promises');
 const config = require('../config');
-const { logInfo, logError, logWarn, logDebug } = require('../utils/logger');
+const logger = require('../utils/logger');
+const { logInfo, logError, logWarn } = logger;
+// Логирование не должно ронять воспроизведение: если логгер старее кода
+// (например, при рассинхроне файлов на сервере), работаем без debug-вывода.
+const logDebug = typeof logger.logDebug === 'function' ? logger.logDebug : () => {};
 const SafeHttpClient = require('../utils/SafeHttpClient');
 const YtDlpClient = require('../utils/YtDlpClient');
 const PlatformSource = require('../utils/PlatformSource');
