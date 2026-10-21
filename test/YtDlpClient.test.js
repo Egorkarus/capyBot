@@ -95,3 +95,41 @@ test('classifyDownloadFailure классифицирует только филь
     assert.equal(YtDlpClient.classifyDownloadFailure(0, ''), null);
     assert.equal(YtDlpClient.classifyDownloadFailure(1, 'ERROR: unavailable'), null);
 });
+
+test('extractFailureDetail: только WARNING о версии возвращается как есть', () => {
+    const warning = 'WARNING: Your yt-dlp version 2026.05.01 is older than 90 days!';
+
+    assert.equal(YtDlpClient.extractFailureDetail(`${warning}\n`, ''), warning);
+});
+
+test('extractFailureDetail: ERROR-строка stderr важнее WARNING', () => {
+    const stderr = [
+        'ERROR: [youtube] Video unavailable',
+        'WARNING: Your yt-dlp version 2026.05.01 is older than 90 days!'
+    ].join('\n');
+
+    assert.equal(
+        YtDlpClient.extractFailureDetail(stderr, ''),
+        'ERROR: [youtube] Video unavailable'
+    );
+});
+
+test('extractFailureDetail: пустой stderr — берётся последняя строка stdout', () => {
+    assert.equal(
+        YtDlpClient.extractFailureDetail('', 'ERROR: something\n'),
+        'ERROR: something'
+    );
+});
+
+test('extractFailureDetail: пустые потоки дают Unknown', () => {
+    assert.equal(YtDlpClient.extractFailureDetail('', ''), 'Unknown');
+    assert.equal(YtDlpClient.extractFailureDetail(null, undefined), 'Unknown');
+});
+
+test('extractFailureDetail обрезает строку до 500 символов', () => {
+    const longLine = `ERROR: ${'x'.repeat(600)}`;
+    const detail = YtDlpClient.extractFailureDetail(longLine, '');
+
+    assert.equal(detail.length, 500);
+    assert.ok(detail.startsWith('ERROR: '));
+});

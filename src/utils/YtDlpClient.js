@@ -110,6 +110,37 @@ function classifyDownloadFailure(code, stderr) {
     return null;
 }
 
+/**
+ * Извлекает реальную причину сбоя yt-dlp.
+ * Предупреждения (например, об устаревшей версии) не должны скрывать ошибку,
+ * которая может быть в stdout или в более ранней строке stderr.
+ * @param {string} stderr
+ * @param {string} stdout
+ * @returns {string} одна строка с причиной, не длиннее 500 символов
+ */
+function extractFailureDetail(stderr, stdout) {
+    const toLines = (text) => String(text || '')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(line => line.length > 0);
+
+    const stderrLines = toLines(stderr);
+    const stdoutLines = toLines(stdout);
+    const truncate = (line) => (line.length > 500 ? line.slice(0, 500) : line);
+
+    const errorLines = stderrLines.filter(line => line.includes('ERROR:'));
+    if (errorLines.length > 0) return truncate(errorLines[errorLines.length - 1]);
+
+    const nonWarningLine = stderrLines.filter(line => !line.startsWith('WARNING:')).pop();
+    if (nonWarningLine) return truncate(nonWarningLine);
+
+    if (stdoutLines.length > 0) return truncate(stdoutLines[stdoutLines.length - 1]);
+
+    if (stderrLines.length > 0) return truncate(stderrLines[stderrLines.length - 1]);
+
+    return 'Unknown';
+}
+
 class YtDlpClient {
     static buildInfoArgs(url, options = {}) {
         const args = ['--no-playlist', '--no-warnings', '--print', INFO_PRINT_TEMPLATE];
@@ -254,6 +285,7 @@ class YtDlpClient {
 
             const ytDlp = spawn('yt-dlp', args);
             let stderrData = '';
+            let stdoutData = '';
             let lastStderrLine = '';
             let isSettled = false;
             let isStopping = false;
@@ -329,7 +361,14 @@ class YtDlpClient {
 
             // Активность — любые данные любого из потоков. Прогресс загрузки
             // yt-dlp пишет в stdout, ошибки и фазы — в stderr.
-            ytDlp.stdout.on('data', () => resetInactivityTimer());
+            // Хвост stdout нужен для диагностики: иногда причина сбоя только там.
+            ytDlp.stdout.on('data', (chunk) => {
+                stdoutData += chunk.toString();
+                if (stdoutData.length > 2000) {
+                    stdoutData = stdoutData.slice(-2000);
+                }
+                resetInactivityTimer();
+            });
 
             ytDlp.stderr.on('data', (chunk) => {
                 const text = chunk.toString();
@@ -366,7 +405,11 @@ class YtDlpClient {
                     return;
                 }
 
-                settle(reject, new Error(`yt-dlp завершился с кодом ${code}. Ошибка: ${stderrData.trim() || 'Unknown'}`));
+                const detail = extractFailureDetail(stderrData, stdoutData);
+                const outdatedVersionHint = detail.includes('is older than 90 days')
+                    ? ' (похоже, в образе устаревший yt-dlp: пересоберите образ — docker compose up -d --build)'
+                    : '';
+                settle(reject, new Error(`yt-dlp завершился с кодом ${code}. ${detail}${outdatedVersionHint}`));
             });
         });
     }
@@ -433,3 +476,4 @@ class YtDlpClient {
 module.exports = YtDlpClient;
 module.exports.parseInfoOutput = parseInfoOutput;
 module.exports.classifyDownloadFailure = classifyDownloadFailure;
+module.exports.extractFailureDetail = extractFailureDetail;
