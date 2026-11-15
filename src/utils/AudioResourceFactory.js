@@ -1,7 +1,11 @@
 const fs = require('fs');
 const { createAudioResource, StreamType } = require('@discordjs/voice');
 const { readOpusChannels } = require('./AudioInputType');
-const { logDebug, logError } = require('./logger');
+const logger = require('./logger');
+const { logError } = logger;
+// Логгер не должен ронять аудио-путь: при рассинхроне версий файлов на сервере
+// (логгер старее кода) debug-вызов становится no-op.
+const logDebug = typeof logger.logDebug === 'function' ? logger.logDebug : () => {};
 
 function logStreamFailure(filePath, error, loggers = {}) {
     const debug = loggers.logDebug ?? logDebug;

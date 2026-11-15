@@ -868,7 +868,7 @@ test('_watchResourceTeardown переводит плеер в Idle, если п�
     resource.playStream.emit('close');
     assert.equal(session.pendingTimers.size, 1);
 
-    t.mock.timers.tick(1500);
+    t.mock.timers.tick(3000);
 
     assert.equal(fakePlayer.stopped, true);
     assert.equal(session.player.state.status, AudioPlayerStatus.Idle);
@@ -885,7 +885,7 @@ test('_watchResourceTeardown не трогает плеер, который уж
 
     session._watchResourceTeardown(resource);
     resource.playStream.emit('close');
-    t.mock.timers.tick(1500);
+    t.mock.timers.tick(3000);
 
     assert.equal(fakePlayer.stopped, undefined);
     assert.equal(session.pendingTimers.size, 0);
@@ -900,8 +900,25 @@ test('_watchResourceTeardown не останавливает плеер с др�
 
     session._watchResourceTeardown(resource);
     resource.playStream.emit('end');
-    t.mock.timers.tick(1500);
+    t.mock.timers.tick(3000);
 
     assert.equal(fakePlayer.stopped, undefined);
+    assert.equal(session.pendingTimers.size, 0);
+});
+
+test('destroy снимает таймер watchdog, поставленный после close потока', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    const resource = { playStream: new EventEmitter() };
+
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+
+    session._watchResourceTeardown(resource);
+    resource.playStream.emit('close');
+    assert.equal(session.pendingTimers.size, 1);
+
+    await session.destroy();
+
+    assert.equal(session.pendingTimers.size, 0);
+    t.mock.timers.tick(3000);
     assert.equal(session.pendingTimers.size, 0);
 });

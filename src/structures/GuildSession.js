@@ -36,6 +36,10 @@ const getDownloadLimitBytes = () =>
 
 // Прямые URL качает SafeHttpClient, поэтому тот же лимит применяется и к нему:
 // security.maxFileSizeBytes не должен обходиться ссылкой вместо платформы.
+// 'end' входного потока опережает реальный конец воспроизведения: в буферах
+// ещё остаются кадры, поэтому принудительный idle ждёт с запасом.
+const RESOURCE_TEARDOWN_GRACE_MS = 3000;
+
 const getMaxFileSizeLimitBytes = () => {
     const securityLimit = (config.security && config.security.maxFileSizeBytes)
         ? config.security.maxFileSizeBytes
@@ -489,9 +493,10 @@ class GuildSession {
                 if (this.destroyed) return;
                 if (this.player.state.status === AudioPlayerStatus.Idle) return;
                 if (this.player.state.resource !== resource) return;
-                logWarn('Audio resource ended without player idle; forcing idle to keep the queue moving');
+                const resourceKind = this.currentFilePath ? 'file' : 'stream';
+                logWarn(`Audio resource ended without player idle (code=teardown, resource=${resourceKind}); forcing idle to keep the queue moving`);
                 this.player.stop(true);
-            }, 1500);
+            }, RESOURCE_TEARDOWN_GRACE_MS);
 
             this.pendingTimers.add(timer);
         };
