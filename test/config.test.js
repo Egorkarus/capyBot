@@ -92,3 +92,17 @@ test('MAX_FILE_SIZE_BYTES переопределяет только security.max
     assert.equal(config.security.maxFileSizeBytes, 5000);
     assert.equal(config.limits.maxDownloadBytes, 70 * 1024 * 1024);
 });
+
+test('allowedMimeTypes содержит аудио-алиасы CDN без дубликатов', t => {
+    const envSnapshot = snapshotEnv();
+    t.after(() => restoreEnv(envSnapshot));
+
+    const { allowedMimeTypes } = loadConfig().security;
+
+    for (const mimeType of ['audio/mpeg3', 'audio/mp3', 'audio/x-wav']) {
+        assert.equal(allowedMimeTypes.includes(mimeType), true, `отсутствует ${mimeType}`);
+    }
+
+    assert.equal(new Set(allowedMimeTypes).size, allowedMimeTypes.length, 'в списке есть дубликаты');
+});
+

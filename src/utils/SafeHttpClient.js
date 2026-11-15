@@ -303,3 +303,4 @@ class SafeHttpClient {
 }
 
 module.exports = SafeHttpClient;
+module.exports.isAllowedMimeType = isAllowedMimeType;

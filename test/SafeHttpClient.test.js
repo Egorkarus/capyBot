@@ -158,3 +158,12 @@ test('isIpAddressBlocked помечает приватные, loopback и reserv
 
     assert.equal(await SafeHttpClient.isIpAddressBlocked('8.8.8.8'), false);
 });
+
+test('isAllowedMimeType принимает алиасы CDN и отклоняет чужие типы', () => {
+    assert.equal(SafeHttpClient.isAllowedMimeType('audio/mpeg3'), true);
+    assert.equal(SafeHttpClient.isAllowedMimeType('audio/mpeg; charset=binary'), true);
+    assert.equal(SafeHttpClient.isAllowedMimeType('audio/mpeg4'), false);
+    assert.equal(SafeHttpClient.isAllowedMimeType('text/html'), false);
+    assert.equal(SafeHttpClient.isAllowedMimeType('AUDIO/MPEG3'), true);
+});
+
