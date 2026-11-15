@@ -4,6 +4,7 @@ const fsPromises = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { PassThrough } = require('node:stream');
+const { EventEmitter } = require('node:events');
 const { AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
 
 const config = require('../src/config');
@@ -841,4 +842,66 @@ test('отмена во время создания ресурса не запу
     assert.equal(session.currentFilePath, null);
     assert.ok(downloadedPath);
     await assert.rejects(fsPromises.access(downloadedPath), { code: 'ENOENT' });
+});
+
+function stubPlayerForTeardown(session, resource) {
+    const fakePlayer = {
+        state: { status: AudioPlayerStatus.Playing, resource },
+        stopped: undefined,
+        stop(called) {
+            this.stopped = called;
+            this.state = { status: AudioPlayerStatus.Idle };
+        }
+    };
+    session.player = fakePlayer;
+    return fakePlayer;
+}
+
+test('_watchResourceTeardown переводит плеер в Idle, если поток закрылся раньше плеера', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    const resource = { playStream: new EventEmitter() };
+    const fakePlayer = stubPlayerForTeardown(session, resource);
+
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+
+    session._watchResourceTeardown(resource);
+    resource.playStream.emit('close');
+    assert.equal(session.pendingTimers.size, 1);
+
+    t.mock.timers.tick(1500);
+
+    assert.equal(fakePlayer.stopped, true);
+    assert.equal(session.player.state.status, AudioPlayerStatus.Idle);
+    assert.equal(session.pendingTimers.size, 0);
+});
+
+test('_watchResourceTeardown не трогает плеер, который уже в Idle', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    const resource = { playStream: new EventEmitter() };
+    const fakePlayer = stubPlayerForTeardown(session, resource);
+    fakePlayer.state = { status: AudioPlayerStatus.Idle, resource };
+
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+
+    session._watchResourceTeardown(resource);
+    resource.playStream.emit('close');
+    t.mock.timers.tick(1500);
+
+    assert.equal(fakePlayer.stopped, undefined);
+    assert.equal(session.pendingTimers.size, 0);
+});
+
+test('_watchResourceTeardown не останавливает плеер с другим ресурсом', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    const resource = { playStream: new EventEmitter() };
+    const fakePlayer = stubPlayerForTeardown(session, { other: true });
+
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+
+    session._watchResourceTeardown(resource);
+    resource.playStream.emit('end');
+    t.mock.timers.tick(1500);
+
+    assert.equal(fakePlayer.stopped, undefined);
+    assert.equal(session.pendingTimers.size, 0);
 });

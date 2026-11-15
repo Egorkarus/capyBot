@@ -312,6 +312,7 @@ class GuildSession {
                     });
                     this.currentResource = liveResource;
                     this.player.play(liveResource);
+                    this._watchResourceTeardown(liveResource);
                     this._clearPendingTimers();
                     this.connectionRetryCount = 0;
                     logInfo(`Started live stream playback in guild ${this.guildId}`);
@@ -413,6 +414,7 @@ class GuildSession {
 
             this.currentResource = resource;
             this.player.play(resource);
+            this._watchResourceTeardown(resource);
             this._clearPendingTimers();
             this.connectionRetryCount = 0;
             logInfo(`Started playing file in guild ${this.guildId}`);
@@ -474,6 +476,28 @@ class GuildSession {
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
         if (this.tracks.length === 0) return;
         await this.playNextTrack();
+    }
+
+    /**
+     * Некоторые ошибки входного потока не доходят до плеера: ресурс закрывается,
+     * а плеер остаётся в playing и очередь встаёт. Страхуемся таймером.
+     */
+    _watchResourceTeardown(resource) {
+        const onTeardown = () => {
+            const timer = setTimeout(() => {
+                this.pendingTimers.delete(timer);
+                if (this.destroyed) return;
+                if (this.player.state.status === AudioPlayerStatus.Idle) return;
+                if (this.player.state.resource !== resource) return;
+                logWarn('Audio resource ended without player idle; forcing idle to keep the queue moving');
+                this.player.stop(true);
+            }, 1500);
+
+            this.pendingTimers.add(timer);
+        };
+
+        resource.playStream?.once?.('close', onTeardown);
+        resource.playStream?.once?.('end', onTeardown);
     }
 
     /**

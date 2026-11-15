@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { StreamType } = require('@discordjs/voice');
 
-const { createFileResource } = require('../src/utils/AudioResourceFactory');
+const { createFileResource, logStreamFailure } = require('../src/utils/AudioResourceFactory');
 
 test('createFileResource отдаёт stereo opus потоком с StreamType.OggOpus', async () => {
     const stream = { on() {} };
@@ -61,4 +61,30 @@ test('createFileResource отдаёт прежним путём не-opus фай
 
     assert.equal(result, 'fallback-resource');
     assert.deepEqual(calls, [['/tmp/video.webm']]);
+});
+
+test('logStreamFailure: штатный premature close идёт в debug, не в error', () => {
+    let debugCalls = 0;
+    let errorCalls = 0;
+
+    logStreamFailure('x.opus', { code: 'ERR_STREAM_PREMATURE_CLOSE' }, {
+        logDebug: () => { debugCalls += 1; },
+        logError: () => { errorCalls += 1; }
+    });
+
+    assert.equal(debugCalls, 1);
+    assert.equal(errorCalls, 0);
+});
+
+test('logStreamFailure: реальная ошибка чтения идёт в error, не в debug', () => {
+    let debugCalls = 0;
+    let errorCalls = 0;
+
+    logStreamFailure('x.opus', new Error('ENOENT'), {
+        logDebug: () => { debugCalls += 1; },
+        logError: () => { errorCalls += 1; }
+    });
+
+    assert.equal(errorCalls, 1);
+    assert.equal(debugCalls, 0);
 });
