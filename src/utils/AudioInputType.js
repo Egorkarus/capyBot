@@ -1,4 +1,7 @@
 const fsPromises = require('fs/promises');
+const logger = require('./logger');
+// Как и в GuildSession: логгер может быть старше кода, поэтому debug-лог безопасный.
+const logDebug = typeof logger.logDebug === 'function' ? logger.logDebug : () => {};
 
 const OGG_CAPTURE_PATTERN = Buffer.from('OggS');
 const OGG_PAGE_HEADER_BYTES = 27;
@@ -48,6 +51,8 @@ async function readOpusChannels(filePath) {
         const { bytesRead } = await handle.read(buffer, 0, OPUS_HEAD_PROBE_BYTES, 0);
         return readOpusHeadChannels(buffer, bytesRead);
     } catch (error) {
+        // null означает «не Ogg/Opus», поэтому EACCES/ENOENT надо хотя бы видеть.
+        logDebug(`Cannot read Opus header ${filePath}: ${error.code || error.message}`);
         return null;
     } finally {
         if (handle) await handle.close().catch(() => {});

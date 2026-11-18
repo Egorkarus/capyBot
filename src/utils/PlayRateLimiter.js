@@ -3,7 +3,6 @@ const config = require('../config');
 class PlayRateLimiter {
     constructor() {
         this.userRequests = new Map();
-        this.guildRequests = new Map();
     }
 
     checkUserLimit(userId) {

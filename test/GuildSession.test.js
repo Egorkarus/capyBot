@@ -922,3 +922,62 @@ test('destroy снимает таймер watchdog, поставленный п�
     t.mock.timers.tick(3000);
     assert.equal(session.pendingTimers.size, 0);
 });
+
+function createFakeVoiceConnection() {
+    const handlers = new Map();
+    const offCalls = [];
+    const connection = {
+        on(event, handler) {
+            handlers.set(event, handler);
+            return connection;
+        },
+        off(event, handler) {
+            offCalls.push({ event, handler });
+            if (handlers.get(event) === handler) handlers.delete(event);
+            return connection;
+        },
+        subscribe() {
+            return { unsubscribe() {} };
+        },
+        destroy() {}
+    };
+    return { connection, handlers, offCalls };
+}
+
+test('setConnection снимает обработчики со старого соединения при reconnect', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+
+    const first = createFakeVoiceConnection();
+    const second = createFakeVoiceConnection();
+
+    assert.equal(session.setConnection(first.connection, null), true);
+    const firstHandlers = session.connectionHandlers;
+    assert.deepEqual([...first.handlers.keys()].sort(), ['debug', 'error', 'stateChange']);
+
+    assert.equal(session.setConnection(second.connection, null), true);
+
+    assert.equal(first.offCalls.length, 3);
+    assert.deepEqual(first.offCalls.map(call => call.event).sort(), ['debug', 'error', 'stateChange']);
+    for (const call of first.offCalls) {
+        assert.equal(call.handler, firstHandlers[call.event === 'stateChange' ? 'onStateChange' : call.event === 'debug' ? 'onDebug' : 'onError']);
+    }
+
+    assert.notEqual(session.connectionHandlers, firstHandlers);
+    assert.equal(session.connectionHandlers.onStateChange, second.handlers.get('stateChange'));
+    assert.equal(session.connectionHandlers.onDebug, second.handlers.get('debug'));
+    assert.equal(session.connectionHandlers.onError, second.handlers.get('error'));
+    assert.equal(second.offCalls.length, 0);
+});
+
+test('_watchResourceTeardown взводит один таймер на close и end', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    const resource = { playStream: new EventEmitter() };
+
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+
+    session._watchResourceTeardown(resource);
+    resource.playStream.emit('close');
+    resource.playStream.emit('end');
+
+    assert.equal(session.pendingTimers.size, 1);
+});

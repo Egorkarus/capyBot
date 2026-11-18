@@ -468,7 +468,8 @@ class YtDlpClient {
                 });
             });
 
-            ytDlp.on('error', () => {
+            ytDlp.on('error', error => {
+                logError(`yt-dlp info process failed: ${error && error.message ? error.message : String(error)}`);
                 settle(fallback);
             });
         });

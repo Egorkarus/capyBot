@@ -62,6 +62,8 @@ class GuildSession {
         });
         
         this.connection = null;
+        // Обработчики текущего соединения: при reconnect их нужно снять со старого.
+        this.connectionHandlers = null;
         this.subscription = null;
         this.tracks = [];
         this.currentFilePath = null;
@@ -109,7 +111,27 @@ class GuildSession {
         });
     }
 
+    /**
+     * Снимает обработчики с текущего соединения: reconnect создаёт новый объект,
+     * и слушатели старого (мёртвого) копились бы при каждой попытке.
+     */
+    _detachConnectionHandlers() {
+        if (!this.connection || !this.connectionHandlers) return;
+        // Старые версии @discordjs/voice и тестовые заглушки могут не иметь off.
+        if (typeof this.connection.off !== 'function') {
+            this.connectionHandlers = null;
+            return;
+        }
+        const { onStateChange, onDebug, onError } = this.connectionHandlers;
+        this.connection.off('stateChange', onStateChange);
+        this.connection.off('debug', onDebug);
+        this.connection.off('error', onError);
+        this.connectionHandlers = null;
+    }
+
     setConnection(connection, textChannel) {
+        this._detachConnectionHandlers();
+
         // Сессию могли уничтожить (!leave/!stop), пока ждали Ready. Подписка на новое
         // соединение в этом случае оставила бы бота в канале-«зомби» без сессии.
         if (this.destroyed) {
@@ -136,17 +158,22 @@ class GuildSession {
         this.connection = connection;
         this.textChannel = textChannel;
 
-        this.connection.on('stateChange', (oldState, newState) => {
+        const onStateChange = (oldState, newState) => {
             logDebug(`[DEBUG-CONN] State transitioned from ${oldState.status} to ${newState.status}`);
-        });
+        };
 
-        this.connection.on('debug', msg => {
+        const onDebug = msg => {
             logDebug(`[DEBUG-CONN] ${msg}`);
-        });
+        };
 
-        this.connection.on('error', error => {
+        const onError = error => {
             logError(`[DEBUG-CONN] Error`, error);
-        });
+        };
+
+        this.connection.on('stateChange', onStateChange);
+        this.connection.on('debug', onDebug);
+        this.connection.on('error', onError);
+        this.connectionHandlers = { onStateChange, onDebug, onError };
 
         this.subscription = this.connection.subscribe(this.player);
 
@@ -487,7 +514,12 @@ class GuildSession {
      * а плеер остаётся в playing и очередь встаёт. Страхуемся таймером.
      */
     _watchResourceTeardown(resource) {
+        let teardownArmed = false;
         const onTeardown = () => {
+            // 'close' и 'end' приходят парой: второй таймер не нужен.
+            if (teardownArmed) return;
+            teardownArmed = true;
+
             const timer = setTimeout(() => {
                 this.pendingTimers.delete(timer);
                 if (this.destroyed) return;
@@ -621,6 +653,7 @@ class GuildSession {
         await this.stop();
 
         if (this.connection) {
+            this._detachConnectionHandlers();
             try {
                 this.connection.destroy();
             } catch (error) {
