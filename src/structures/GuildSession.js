@@ -532,6 +532,9 @@ class GuildSession {
             this.pendingTimers.delete(this.voiceRecoveryTimer);
             this.voiceRecoveryTimer = null;
             if (this.destroyed) return;
+            // Пока ждали таймер, соединение могло восстановиться само:
+            // переподключение разорвало бы живой канал.
+            if (this.connection && this.connection.state.status === VoiceConnectionStatus.Ready) return;
             void this.reconnect(this.client, this.guildId, { silent: true })
                 .catch(error => logError('Voice auto-recovery failed', error));
         }, delayMs);
@@ -671,6 +674,12 @@ class GuildSession {
     async stop() {
         this.tracks = [];
         this._clearPendingTimers();
+        // pendingTimers очищен, но поле осталось бы непустым: _scheduleVoiceRecovery
+        // проверяет именно его и после !stop больше не взвёл бы восстановление.
+        if (this.voiceRecoveryTimer) {
+            clearTimeout(this.voiceRecoveryTimer);
+            this.voiceRecoveryTimer = null;
+        }
         this.downloadController?.abort();
 
         // Подавляем Idle от собственного stop(), иначе playNextTrack запустит следующий трек.

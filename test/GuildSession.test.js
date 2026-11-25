@@ -1037,3 +1037,58 @@ test('destroy снимает таймер восстановления соед�
     assert.equal(session.pendingTimers.size, 0);
     assert.equal(session.voiceRecoveryTimer, null);
 });
+
+test('_scheduleVoiceRecovery переподключается молча после истечения задержки', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    session.client = { getSession: () => session };
+
+    const calls = [];
+    session.reconnect = async (...args) => {
+        calls.push(args);
+    };
+
+    session._scheduleVoiceRecovery(10);
+    await new Promise(resolve => setTimeout(resolve, 40));
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], [session.client, 'guild-1', { silent: true }]);
+    assert.equal(session.voiceRecoveryTimer, null);
+});
+
+test('_scheduleVoiceRecovery не переподключает живое Ready-соединение', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    session.client = { getSession: () => session };
+    session.connection = { state: { status: VoiceConnectionStatus.Ready } };
+
+    const calls = [];
+    session.reconnect = async (...args) => {
+        calls.push(args);
+    };
+
+    session._scheduleVoiceRecovery(10);
+    await new Promise(resolve => setTimeout(resolve, 40));
+
+    assert.equal(calls.length, 0);
+    assert.equal(session.pendingTimers.size, 0);
+});
+
+test('stop снимает взведённый таймер восстановления и обнуляет поле', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    session.client = { getSession: () => session };
+
+    const calls = [];
+    session.reconnect = async (...args) => {
+        calls.push(args);
+    };
+
+    session._scheduleVoiceRecovery(50);
+    assert.notEqual(session.voiceRecoveryTimer, null);
+
+    await session.stop();
+
+    assert.equal(session.voiceRecoveryTimer, null);
+    assert.equal(session.pendingTimers.size, 0);
+
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(calls.length, 0);
+});
