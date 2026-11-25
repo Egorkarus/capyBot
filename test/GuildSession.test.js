@@ -981,3 +981,59 @@ test('_watchResourceTeardown взводит один таймер на close и 
 
     assert.equal(session.pendingTimers.size, 1);
 });
+
+test('Destroyed в onStateChange планирует восстановление соединения', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    const { connection, handlers } = createFakeVoiceConnection();
+
+    // Клиент выдаёт сессии сам CapyClient.createSession.
+    session.client = { getSession: () => session };
+    assert.equal(session.setConnection(connection, null), true);
+
+    handlers.get('stateChange')(
+        { status: VoiceConnectionStatus.Connecting },
+        { status: VoiceConnectionStatus.Destroyed }
+    );
+
+    assert.notEqual(session.voiceRecoveryTimer, null);
+    assert.equal(session.pendingTimers.has(session.voiceRecoveryTimer), true);
+    assert.equal(session.pendingTimers.size, 1);
+});
+
+test('повторные Disconnected/Destroyed не создают второй таймер восстановления', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    const { connection, handlers } = createFakeVoiceConnection();
+
+    session.client = { getSession: () => session };
+    assert.equal(session.setConnection(connection, null), true);
+
+    const onStateChange = handlers.get('stateChange');
+    onStateChange({ status: VoiceConnectionStatus.Ready }, { status: VoiceConnectionStatus.Disconnected });
+    const recoveryTimer = session.voiceRecoveryTimer;
+    assert.notEqual(recoveryTimer, null);
+
+    onStateChange({ status: VoiceConnectionStatus.Disconnected }, { status: VoiceConnectionStatus.Disconnected });
+    onStateChange({ status: VoiceConnectionStatus.Disconnected }, { status: VoiceConnectionStatus.Destroyed });
+
+    assert.equal(session.voiceRecoveryTimer, recoveryTimer);
+    assert.equal(session.pendingTimers.size, 1);
+});
+
+test('destroy снимает таймер восстановления соединения', { timeout: 5000 }, async t => {
+    const session = createSession(t);
+    const { connection, handlers } = createFakeVoiceConnection();
+
+    session.client = { getSession: () => session };
+    assert.equal(session.setConnection(connection, null), true);
+
+    handlers.get('stateChange')(
+        { status: VoiceConnectionStatus.Connecting },
+        { status: VoiceConnectionStatus.Destroyed }
+    );
+    assert.equal(session.pendingTimers.size, 1);
+
+    await session.destroy();
+
+    assert.equal(session.pendingTimers.size, 0);
+    assert.equal(session.voiceRecoveryTimer, null);
+});

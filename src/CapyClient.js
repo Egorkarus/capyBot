@@ -87,6 +87,8 @@ class CapyClient extends Client {
 
     createSession(guildId, voiceChannelId, textChannelId) {
         const session = new GuildSession(guildId, voiceChannelId, textChannelId);
+        // Сессии нужен клиент для самостоятельного восстановления голосового соединения.
+        session.client = this;
         this.sessions.set(guildId, session);
         return session;
     }

@@ -56,6 +56,9 @@ class GuildSession {
         this.reconnectAttempts = 0;
         this.isReconnecting = false;
         this.destroyed = false;
+        // Клиент выдаёт createSession: без него сессия не может вернуться в канал.
+        this.client = null;
+        this.voiceRecoveryTimer = null;
         
         this.player = createAudioPlayer({
             behaviors: { noSubscriber: NoSubscriberBehavior.Play }
@@ -160,6 +163,25 @@ class GuildSession {
 
         const onStateChange = (oldState, newState) => {
             logDebug(`[DEBUG-CONN] State transitioned from ${oldState.status} to ${newState.status}`);
+
+            if (newState.status === VoiceConnectionStatus.Ready) {
+                if (this.voiceRecoveryTimer) {
+                    clearTimeout(this.voiceRecoveryTimer);
+                    this.pendingTimers.delete(this.voiceRecoveryTimer);
+                    this.voiceRecoveryTimer = null;
+                }
+                return;
+            }
+
+            if (newState.status === VoiceConnectionStatus.Disconnected) {
+                logWarn(`Voice connection disconnected in guild ${this.guildId}`);
+                this._scheduleVoiceRecovery(10000);
+            }
+
+            if (newState.status === VoiceConnectionStatus.Destroyed) {
+                logWarn(`Voice connection destroyed in guild ${this.guildId}`);
+                this._scheduleVoiceRecovery(1000);
+            }
         };
 
         const onDebug = msg => {
@@ -497,6 +519,27 @@ class GuildSession {
     }
 
     /**
+     * Планирует возврат в канал после обрыва. Повторные Disconnected/Destroyed
+     * не должны плодить таймеры: одного восстановления достаточно.
+     */
+    _scheduleVoiceRecovery(delayMs) {
+        if (this.destroyed) return;
+        if (this.isReconnecting) return;
+        if (this.voiceRecoveryTimer) return;
+        if (!this.client || !this.voiceChannelId) return;
+
+        this.voiceRecoveryTimer = setTimeout(() => {
+            this.pendingTimers.delete(this.voiceRecoveryTimer);
+            this.voiceRecoveryTimer = null;
+            if (this.destroyed) return;
+            void this.reconnect(this.client, this.guildId, { silent: true })
+                .catch(error => logError('Voice auto-recovery failed', error));
+        }, delayMs);
+
+        this.pendingTimers.add(this.voiceRecoveryTimer);
+    }
+
+    /**
      * Будит очередь после восстановления соединения: длинный reconnect (2→32 с)
      * переживает ограниченные ретраи, поэтому без этого вызова трек висел бы
      * в очереди до следующей команды пользователя. Дублирование исключено
@@ -649,6 +692,9 @@ class GuildSession {
     async destroy() {
         this.destroyed = true;
         this._clearPendingTimers();
+        // Таймер восстановления лежит в pendingTimers, но поле тоже обнуляем:
+        // иначе isReconnecting-подобные guard'ы увидели бы «живой» таймер.
+        this.voiceRecoveryTimer = null;
 
         await this.stop();
 
@@ -663,7 +709,9 @@ class GuildSession {
         }
     }
 
-    async reconnect(client, guildId) {
+    async reconnect(client, guildId, options = {}) {
+        const silent = options.silent === true;
+
         if (this.destroyed) return;
         if (client.getSession(guildId) !== this) return;
         if (this.isReconnecting) return;
@@ -672,11 +720,15 @@ class GuildSession {
         this.reconnectAttempts = 0;
 
         try {
-            const guild = client.guilds.cache.get(guildId);
-            if (guild && this.textChannel) {
-                const kicker = await this.findKicker(guild, client.user.id);
-                const msg = kicker ? config.messages.reconnectKickedKnown.replace('{kicker}', kicker) : config.messages.reconnectKickedUnknown;
-                await this._send(this.textChannel, msg);
+            // Автовосстановление (silent) не шлёт сообщений: канал не должен
+            // получать спам на каждый обрыв, причина видна в логах.
+            if (!silent) {
+                const guild = client.guilds.cache.get(guildId);
+                if (guild && this.textChannel) {
+                    const kicker = await this.findKicker(guild, client.user.id);
+                    const msg = kicker ? config.messages.reconnectKickedKnown.replace('{kicker}', kicker) : config.messages.reconnectKickedUnknown;
+                    await this._send(this.textChannel, msg);
+                }
             }
 
             // Пока ждали отправки сообщения, сессию могли заменить (!join/!play):
@@ -694,12 +746,15 @@ class GuildSession {
                 this.connection = null;
             }
 
-            while (this.reconnectAttempts < config.timeouts.reconnectMaxAttempts) {
+            // Сдаваться нельзя: бот возвращается в канал, пока сессия жива.
+            // Выходим только по !leave/!stop (destroyed) — молча.
+            while (!this.destroyed) {
                 this.reconnectAttempts++;
 
-                if (this.destroyed) return;
-
-                const delay = config.timeouts.reconnectBaseDelay * Math.pow(2, this.reconnectAttempts - 1);
+                const delay = Math.min(
+                    config.timeouts.reconnectBaseDelay * Math.pow(2, this.reconnectAttempts - 1),
+                    30000
+                );
                 await new Promise(res => setTimeout(res, delay));
 
                 if (this.destroyed) return;
@@ -739,9 +794,13 @@ class GuildSession {
                         return;
                     }
 
-                    this.setConnection(connection, this.textChannel);
+                    if (!this.setConnection(connection, this.textChannel)) return;
 
-                    await this._send(this.textChannel, config.messages.reconnectSuccess);
+                    if (silent) {
+                        logInfo(`Voice connection restored in guild ${this.guildId}`);
+                    } else {
+                        await this._send(this.textChannel, config.messages.reconnectSuccess);
+                    }
                     // Подписка уже переехала на новое соединение (setConnection):
                     // возвращаем отложенную очередь в работу, не дожидаясь команд.
                     void this._wakeQueueIfIdle().catch(error => logError('Failed to wake queue after reconnect', error));
@@ -759,9 +818,6 @@ class GuildSession {
                     }
                 }
             }
-
-            await this._send(this.textChannel, config.messages.reconnectGiveUp);
-            this._deleteSessionIfOwner(client, guildId);
         } finally {
             // Сбрасываем состояние на всех ветках выхода, иначе повторный reconnect не запустится.
             this.reconnectAttempts = 0;

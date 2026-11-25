@@ -15,7 +15,6 @@ module.exports = {
     },
     timeouts: {
         joinReady: 5000,
-        reconnectMaxAttempts: 5,
         reconnectBaseDelay: 2000,
         kickCheckWindowMs: 30000,
         httpDownloadTimeoutMs: readInt('HTTP_DOWNLOAD_TIMEOUT_MS', 60000),
