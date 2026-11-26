@@ -175,7 +175,7 @@ class GuildSession {
 
             if (newState.status === VoiceConnectionStatus.Disconnected) {
                 logWarn(`Voice connection disconnected in guild ${this.guildId}`);
-                this._scheduleVoiceRecovery(10000);
+                this._scheduleVoiceRecovery(4000);
             }
 
             if (newState.status === VoiceConnectionStatus.Destroyed) {

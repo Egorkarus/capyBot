@@ -1,4 +1,8 @@
 require('dotenv').config();
+const dns = require('node:dns');
+// У сервера нет глобального IPv6: попытки AAAA-адресов дают ENETUNREACH
+// и задерживают подключение к voice-эндпоинтам Discord.
+dns.setDefaultResultOrder('ipv4first');
 const CapyClient = require('./CapyClient');
 const { logInfo, logWarn, logError } = require('./utils/logger');
 
